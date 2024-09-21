@@ -1,0 +1,4 @@
+slurm_outputs/
+slurm_scripts/
+__pycache__/
+wandb/
