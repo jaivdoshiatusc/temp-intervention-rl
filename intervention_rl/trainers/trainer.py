@@ -1,13 +1,11 @@
 import torch
 import torch.nn.functional as F
 import torch.optim as optim
-import blocker
-from blocker_model import CNNClassifier
 
-from envs import create_atari_env
-from model import ActorCritic
-
-import random
+from envs.pong import create_atari_env
+from intervention_rl.models.agent_model import ActorCritic
+from intervention_rl.models.blocker_model import CNNClassifier
+from intervention_rl.utils import pong_blocker as blocker
 
 def ensure_shared_grads(model, shared_model):
     """Copy gradients from model to shared_model."""
@@ -22,23 +20,23 @@ def one_hot_encode_action(action, num_actions):
     one_hot[action] = 1.0
     return one_hot
 
-def train(rank, args, shared_model, shared_cnn_model, counter, lock, optimizer=None, cnn_optimizer=None, all_observations=None, all_labels=None):
-    torch.manual_seed(args.seed + rank)
+def train(rank, cfg, shared_model, shared_blocker_model, counter, lock, optimizer=None, blocker_optimizer=None, shared_observations=None, shared_labels=None):
+    torch.manual_seed(cfg.seed + rank)
 
-    env = create_atari_env(args.env_name)
+    env = create_atari_env(cfg.env.name)
     if hasattr(env, 'get_wrapper_attr'):
-        env.get_wrapper_attr('seed')(args.seed + rank)
+        env.get_wrapper_attr('seed')(cfg.seed + rank)
     else:
-        env.unwrapped.seed(args.seed + rank)
+        env.unwrapped.seed(cfg.seed + rank)
 
     # Create the ActorCritic model and CNN classifier
     model = ActorCritic(env.observation_space.shape[0], env.action_space)
-    cnn_model = CNNClassifier(env.action_space.n)
+    blocker_model = CNNClassifier(env.action_space.n)
     
     if optimizer is None:
-        optimizer = optim.Adam(shared_model.parameters(), lr=args.lr)
-    if cnn_optimizer is None:
-        cnn_optimizer = optim.Adam(shared_cnn_model.parameters(), lr=args.cnn_lr)
+        optimizer = optim.Adam(shared_model.parameters(), lr=cfg.algorithm.lr)
+    if blocker_optimizer is None:
+        blocker_optimizer = optim.Adam(shared_blocker_model.parameters(), lr=cfg.algorithm.blocker_model_lr)
 
     model.train()
 
@@ -46,17 +44,24 @@ def train(rank, args, shared_model, shared_cnn_model, counter, lock, optimizer=N
     state = torch.from_numpy(state)
     done = True
 
-    episode_length = 0 # Track episode length
-    observations = []  # Store observations for CNN training
-    labels = []        # Store labels for CNN training (1 for block, 0 for no block)
-    use_cnn = False    # Initially, use should_block()
+    episode_length = 0
+    approx_counter = 0
+    use_blocker_model = False # Initially, use should_block()
 
     while True:
         with lock:
-            if counter.value >= args.max_steps: break
+            approx_counter = counter.value
+
+        if approx_counter >= cfg.algorithm.max_steps:
+            break
+
+        if approx_counter >= cfg.algorithm.max_steps_for_blocker_training and not use_blocker_model:
+            use_blocker_model = True
+        else:
+            use_blocker_model = False
 
         model.load_state_dict(shared_model.state_dict())
-        cnn_model.load_state_dict(shared_cnn_model.state_dict())
+        blocker_model.load_state_dict(shared_blocker_model.state_dict())
         
         if done:
             cx = torch.zeros(1, 256)
@@ -70,7 +75,7 @@ def train(rank, args, shared_model, shared_cnn_model, counter, lock, optimizer=N
         rewards = []
         entropies = []
 
-        for step in range(args.num_steps):
+        for step in range(cfg.algorithm.num_steps):
             episode_length += 1
             value, logit, (hx, cx) = model((state.unsqueeze(0), (hx, cx)))
             prob = F.softmax(logit, dim=-1)
@@ -82,23 +87,17 @@ def train(rank, args, shared_model, shared_cnn_model, counter, lock, optimizer=N
             robot_action = action
 
             full_obs = env.get_wrapper_attr('get_full_obs')()
-            cnn_input = env.get_wrapper_attr('get_cropped_obs')()
+            blocker_model_input = env.get_wrapper_attr('get_cropped_obs')()
 
             one_hot_action = one_hot_encode_action(robot_action, env.action_space.n) 
 
-            cnn_input_obs = torch.tensor(cnn_input, dtype=torch.float32).permute(0, 2, 1).unsqueeze(0)
-            cnn_input_action = one_hot_action.unsqueeze(0)
-            cnn_output = cnn_model(cnn_input_obs, cnn_input_action)
-            cnn_block_decision = torch.argmax(cnn_output, dim=1).item()
+            blocker_model_input_obs = torch.tensor(blocker_model_input, dtype=torch.float32).permute(0, 2, 1).unsqueeze(0)
+            blocker_model_input_action = one_hot_action.unsqueeze(0)
+            blocker_model_output = blocker_model(blocker_model_input_obs, blocker_model_input_action)
+            blocker_model_block_decision = torch.argmax(blocker_model_output, dim=1).item()
 
-            # After N steps, switch to CNN for blocking decisions
-            with lock:
-                if counter.value >= args.max_steps_for_cnn and not use_cnn:
-                    print(f"Process {rank} | Switching to CNN for blocking decisions after {counter.value} steps.")
-                    use_cnn = True
-
-            if use_cnn:
-                block_decision = cnn_block_decision
+            if use_blocker_model:
+                block_decision = blocker_model_block_decision
                 action = 2 if block_decision else robot_action
                 # Learn on Expert Human Action
                 log_prob = log_prob.gather(1, torch.tensor([[action]]))
@@ -109,29 +108,30 @@ def train(rank, args, shared_model, shared_cnn_model, counter, lock, optimizer=N
                 log_prob = log_prob.gather(1, torch.tensor([[action]]))
 
                 # Store observation and label for CNN training
-                all_observations.append((cnn_input, one_hot_action))
-                all_labels.append(block_decision)
+                with lock:
+                    shared_observations.append((blocker_model_input, one_hot_action))
+                    shared_labels.append(block_decision)
 
                 # Calculate uncertainty (entropy) of CNN output
-                cnn_prob = F.softmax(cnn_output, dim=-1)
-                cnn_prob = torch.clamp(cnn_prob, min=1e-6)
-                cnn_entropy = -(cnn_prob * cnn_prob.log()).sum().item()
+                blocker_model_prob = F.softmax(blocker_model_output, dim=-1)
+                blocker_model_prob = torch.clamp(blocker_model_prob, min=1e-6)
+                blocker_model_entropy = -(blocker_model_prob * blocker_model_prob.log()).sum().item()
 
                 # Log the probabilities for disagreement checking
                 if block_decision == 1:  # Human says block
-                    disagreement = cnn_prob[0, 0]  # Probability of model saying "do not block"
+                    disagreement = blocker_model_prob[0, 0]  # Probability of model saying "do not block"
                 else:  # Human says do not block
-                    disagreement = cnn_prob[0, 1]  # Probability of model saying "block"
+                    disagreement = blocker_model_prob[0, 1]  # Probability of model saying "block"
 
             # Step environment
             state, reward, done, _, _ = env.step(action)
-            done = done or episode_length >= args.max_episode_length
+            done = done or episode_length >= cfg.algorithm.max_episode_length
             reward = max(min(reward, 1), -1)  # Clip rewards
 
-            if use_cnn:
+            if use_blocker_model:
                 modified_reward = reward
             else:
-                modified_reward = reward + (args.alpha * cnn_entropy) + (args.beta if disagreement else 0)
+                modified_reward = reward + (cfg.algorithm.alpha * blocker_model_entropy) + (cfg.algorithm.beta if disagreement else 0)
 
             with lock:
                 counter.value += 1
@@ -158,21 +158,19 @@ def train(rank, args, shared_model, shared_cnn_model, counter, lock, optimizer=N
         value_loss = 0
         gae = torch.zeros(1, 1)
         for i in reversed(range(len(rewards))):
-            R = args.gamma * R + rewards[i]
+            R = cfg.algorithm.gamma * R + rewards[i]
             advantage = R - values[i]
             value_loss = value_loss + 0.5 * advantage.pow(2)
 
-            delta_t = rewards[i] + args.gamma * values[i + 1] - values[i]
-            gae = gae * args.gamma * args.gae_lambda + delta_t
+            delta_t = rewards[i] + cfg.algorithm.gamma * values[i + 1] - values[i]
+            gae = gae * cfg.algorithm.gamma * cfg.algorithm.gae_lambda + delta_t
 
-            policy_loss = policy_loss - log_probs[i] * gae.detach() - args.entropy_coef * entropies[i]
+            policy_loss = policy_loss - log_probs[i] * gae.detach() - cfg.algorithm.entropy_coef * entropies[i]
 
         optimizer.zero_grad()
 
-        total_loss = policy_loss + args.value_loss_coef * value_loss
-        total_loss.backward()
-
-        torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
+        (policy_loss + cfg.algorithm.value_loss_coef * value_loss).backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.algorithm.max_grad_norm)
 
         ensure_shared_grads(model, shared_model)
         optimizer.step()

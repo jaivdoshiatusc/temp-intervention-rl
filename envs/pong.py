@@ -1,6 +1,6 @@
 import cv2
-import gymnasium as gym
 import numpy as np
+import gymnasium as gym
 from gymnasium.spaces import Box
 
 def create_atari_env(env_id):
