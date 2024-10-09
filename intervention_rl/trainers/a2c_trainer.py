@@ -1,39 +1,61 @@
-import gymnasium as gym
-import torch
-from stable_baselines3 import A2C
-from stable_baselines3.common.buffers import RolloutBuffer
-from stable_baselines3.common.vec_env import DummyVecEnv
-from omegaconf import DictConfig
 import os
+import numpy as np
+import torch
+import gymnasium as gym
+from omegaconf import DictConfig, OmegaConf  # Import OmegaConf for config conversion
+from stable_baselines3 import A2C
+from stable_baselines3.common.vec_env import DummyVecEnv
+from stable_baselines3.common.callbacks import EvalCallback
+import wandb
+
+# Custom Observation Wrapper to permute the observation space to (channels, height, width)
+class ChannelFirstWrapper(gym.ObservationWrapper):
+    def __init__(self, env):
+        super(ChannelFirstWrapper, self).__init__(env)
+        obs_shape = env.observation_space.shape
+        self.observation_space = gym.spaces.Box(
+            low=env.observation_space.low.transpose(2, 0, 1),
+            high=env.observation_space.high.transpose(2, 0, 1),
+            shape=(obs_shape[2], obs_shape[0], obs_shape[1]),
+            dtype=env.observation_space.dtype
+        )
+
+    def observation(self, obs):
+        return np.transpose(obs, (2, 0, 1))
+
+def make_env(env_name, seed):
+    env = gym.make(env_name)
+    env = ChannelFirstWrapper(env)  # Apply the custom wrapper
+    if seed is not None:
+        env.seed(seed)
+    return env
 
 class A2CTrainer:
     def __init__(self, cfg: DictConfig, exp_dir: str):
-        # Extracting parameters from Hydra config
+        # Extract parameters from config
+        self.cfg = cfg
         self.env_name = cfg.env.name
         self.total_timesteps = cfg.algo.a2c.total_timesteps
         self.save_path = os.path.join(exp_dir)  # Save model to exp_dir
-        self.n_steps = cfg.algo.a2c.n_steps
         self.device = torch.device(cfg.device)
-
-        # Logging and saving frequencies
         self.log_freq = cfg.algo.a2c.log_freq
         self.eval_freq = cfg.algo.a2c.eval_freq
-        self.save_freq = cfg.algo.a2c.save_freq
-        self.oversight_timesteps = cfg.algo.a2c.oversight_timesteps
-        self.blocker_train_freq = cfg.algo.a2c.blocker_train_freq
+
+        sanitized_config = OmegaConf.to_container(self.cfg, resolve=True)
+
+        wandb.init(
+            project="modified_hirl",
+            name="experiment_name",
+            config=sanitized_config, 
+            sync_tensorboard=True  
+        )
 
         # Create the environment and wrap it, with seeding
-        def make_env(env_name, seed):
-            env = gym.make(env_name)
-            if seed is not None:
-                env.unwrapped.seed(seed)  # Seed the environment
-            return env
-
         self.env = DummyVecEnv([lambda: make_env(self.env_name, cfg.seed)])
 
-        # Create A2C model using the policy and additional kwargs from the config
+        # Create A2C model
         self.model = A2C(
-            cfg.algo.a2c.policy,  # Use policy from the config (CnnPolicy, MlpPolicy, etc.)
+            cfg.algo.a2c.policy,
             self.env,
             learning_rate=cfg.algo.a2c.learning_rate,
             n_steps=cfg.algo.a2c.n_steps,
@@ -47,106 +69,33 @@ class A2CTrainer:
             use_sde=cfg.algo.a2c.use_sde,
             sde_sample_freq=cfg.algo.a2c.sde_sample_freq,
             normalize_advantage=cfg.algo.a2c.normalize_advantage,
-            verbose=cfg.algo.a2c.verbose,
+            verbose=1,
             seed=cfg.seed,
-            device=cfg.device
+            device=cfg.device,
+            tensorboard_log=f"runs/{wandb.run.id}"  
         )
-        
-        # Initialize the rollout buffer (which stores the experiences)
-        self.rollout_buffer = RolloutBuffer(
-            buffer_size=self.n_steps * self.env.num_envs,  # Adjust for number of envs
-            observation_space=self.env.observation_space,
-            action_space=self.env.action_space,
-            device=self.device,
-            gamma=cfg.algo.a2c.gamma,
-            gae_lambda=cfg.algo.a2c.gae_lambda,
-            n_envs=self.env.num_envs
-        )
-        
-        # Variable to track timesteps
-        self.num_timesteps = 0
-
-    def collect_experiences(self):
-        # Reset the environment and collect data for n_steps
-        obs = self.env.reset()
-        obs = torch.tensor(obs, dtype=torch.float32).to(self.device)  # Convert to torch Tensor
-        episode_reward = 0  # Track episode reward
-
-        for step in range(self.n_steps):
-            # Convert the observation to a tensor before passing it to the model
-            action, values, log_probs = self.model.policy.forward(obs)
-            
-            # Step through the environment
-            new_obs, rewards, dones, infos = self.env.step(action)
-            
-            # Convert the new observation as well
-            new_obs = torch.tensor(new_obs, dtype=torch.float32).to(self.device)
-            
-            episode_reward += rewards.sum()
-
-            # Add experience to the rollout buffer
-            self.rollout_buffer.add(obs, action, rewards, dones, values, log_probs)
-            
-            # Move to the next observation
-            obs = new_obs
-            self.num_timesteps += 1
-
-            if any(dones):  # Handle multiple environments done condition
-                print(f"Episode done at step {self.num_timesteps}, Reward: {episode_reward}")
-                break
-
-    def train_policy(self):
-        # Compute returns and advantages based on the stored rollouts
-        self.rollout_buffer.compute_returns_and_advantage(last_values=torch.tensor([0.0]))
-
-        # Update the policy using the data in the buffer
-        self.model.train()
-
-    def log_progress(self):
-        """Logs training progress every log_freq timesteps."""
-        print(f"Timestep {self.num_timesteps}/{self.total_timesteps}")
-
-    def evaluate(self):
-        """Placeholder for evaluation logic every eval_freq timesteps."""
-        print(f"Evaluating at timestep {self.num_timesteps}")
-        # You can add evaluation logic here using a separate evaluation environment
-
-    def train_blocker(self):
-        """Placeholder for training blocker logic."""
-        print(f"Training blocker at timestep {self.num_timesteps}")
-        # Add blocker training logic here
 
     def train(self):
-        """
-        This is the main training loop. It will run until the total number of timesteps is reached.
-        """
-        while self.num_timesteps < self.total_timesteps:
-            # Collect experiences from the environment
-            self.collect_experiences()
-            
-            # Train the policy using the collected experiences
-            self.train_policy()
+        eval_env = DummyVecEnv([lambda: make_env(self.env_name, self.cfg.seed + 100)])
 
-            # Log training progress every log_freq timesteps
-            if self.num_timesteps % self.log_freq == 0:
-                self.log_progress()
+        num_eval_episodes = self.cfg.eval.num_rollouts
 
-            # Evaluate the model every eval_freq timesteps
-            if self.num_timesteps % self.eval_freq == 0:
-                self.evaluate()
+        eval_callback = EvalCallback(
+            eval_env=eval_env,
+            eval_freq=self.cfg.algo.a2c.eval_freq,
+            n_eval_episodes=num_eval_episodes,
+            best_model_save_path=None,  
+            verbose=1  
+        )
 
-            # Train blocker every blocker_train_freq timesteps
-            if self.num_timesteps <= self.oversight_timesteps and self.num_timesteps % self.blocker_train_freq == 0:
-                self.train_blocker()
+        self.model.learn(
+            total_timesteps=self.total_timesteps,
+            callback=eval_callback,
+            log_interval=self.log_freq,
+        )
 
-            # Save model periodically
-            if self.num_timesteps % self.save_freq == 0:
-                self.model.save(self.save_path)
-                print(f"Model saved at timestep {self.num_timesteps}")
-        
-        # Final save after training is complete
         self.model.save(self.save_path)
-        print(f"Final model saved after {self.num_timesteps} timesteps")
+        print(f"Final model saved after {self.total_timesteps} timesteps")
 
     def save_model(self):
         self.model.save(self.save_path)
@@ -158,9 +107,9 @@ class A2CTrainer:
     def run_trained_model(self, episodes=5):
         for episode in range(episodes):
             obs = self.env.reset()
-            done = False
+            done = [False]
             episode_reward = 0
-            while not done:
+            while not done[0]:
                 action, _states = self.model.predict(obs, deterministic=True)
                 obs, reward, done, _ = self.env.step(action)
                 episode_reward += reward
