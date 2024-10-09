@@ -1,0 +1,10 @@
+defaults: 
+    - base
+    
+name: 'PongDeterministic-v4'
+obs_dim: 1
+action_dim: 6
+max_timesteps: 1000
+
+cam_height: 84
+cam_width: 84

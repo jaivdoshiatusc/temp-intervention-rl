@@ -4,7 +4,7 @@ import torch
 import torch.nn.functional as F
 from sklearn.metrics import f1_score, accuracy_score, precision_score, recall_score
 
-from intervention_rl.models.blocker_model import CNNClassifier
+from intervention_rl.models.a3c_blocker_model import CNNClassifier
 
 def blocker_train(cfg, shared_blocker_model, shared_observations, shared_labels, counter, lock, use_wandb, experiment_name='experiment'):
     blocker_model = CNNClassifier(6) # hard-coded action space size
@@ -14,7 +14,7 @@ def blocker_train(cfg, shared_blocker_model, shared_observations, shared_labels,
             if counter.value >= cfg.algorithm.max_steps_for_blocker_training:
                 break
 
-            if len(shared_observations) < 10000:
+            if len(shared_observations) < 1000:
                 continue
 
             blocker_model.load_state_dict(shared_blocker_model.state_dict())

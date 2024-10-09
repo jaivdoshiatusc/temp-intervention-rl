@@ -6,8 +6,8 @@ from omegaconf import OmegaConf
 import wandb
 
 from envs.pong import create_atari_env
-from intervention_rl.models.agent_model import ActorCritic
-from intervention_rl.models.blocker_model import CNNClassifier
+from intervention_rl.models.a3c_agent_model import ActorCritic
+from intervention_rl.models.a3c_blocker_model import CNNClassifier
 from intervention_rl.utils import pong_blocker as blocker
 
 def one_hot_encode_action(action, num_actions):

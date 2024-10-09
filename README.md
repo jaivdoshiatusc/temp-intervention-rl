@@ -5,8 +5,10 @@ Intervention-RL is a reinforcement learning (RL) framework designed for developi
 
 ## Installation
 1. Clone the repository: `git clone https://github.com/username/intervention-rl.git`
-2. Install the required dependencies: `pip install -r requirements.txt`
+2. Install the Package: `pip install -e .`
+3. Install the required dependencies: `conda env create -f environment.yml`
 
 ## Usage
 1. Navigate to the project directory: `cd intervention-rl`
-2. Run the main script: `python main.py`
+2. Run the main script: `python -m scripts.main`
+3. Customize Config Variables: `python -m scripts.main wandb=False`

@@ -1,11 +1,16 @@
+import os
 import torch
-import torch.nn.functional as F
+import torch.multiprocessing as mp
 import torch.optim as optim
 
 from envs.pong import create_atari_env
-from intervention_rl.models.agent_model import ActorCritic
-from intervention_rl.models.blocker_model import CNNClassifier
+from intervention_rl.utils import my_optim
+from intervention_rl.models.a3c_agent_model import ActorCritic
+from intervention_rl.models.a3c_blocker_model import CNNClassifier
+from intervention_rl.rollout.a3c_evaluation import test
+from intervention_rl.trainers.a3c_blocker_trainer import blocker_train
 from intervention_rl.utils import pong_blocker as blocker
+# from intervention_rl.utils.log_utils import log
 
 def ensure_shared_grads(model, shared_model):
     """Copy gradients from model to shared_model."""
@@ -46,7 +51,7 @@ def train(rank, cfg, shared_model, shared_blocker_model, counter, lock, optimize
 
     episode_length = 0
     approx_counter = 0
-    use_blocker_model = False # Initially, use should_block()
+    use_blocker_model = False  # Initially, use should_block()
 
     while True:
         with lock:
@@ -78,8 +83,8 @@ def train(rank, cfg, shared_model, shared_blocker_model, counter, lock, optimize
         for step in range(cfg.algorithm.num_steps):
             episode_length += 1
             value, logit, (hx, cx) = model((state.unsqueeze(0), (hx, cx)))
-            prob = F.softmax(logit, dim=-1)
-            log_prob = F.log_softmax(logit, dim=-1)
+            prob = torch.nn.functional.softmax(logit, dim=-1)
+            log_prob = torch.nn.functional.log_softmax(logit, dim=-1)
             entropy = -(log_prob * prob).sum(1, keepdim=True)
             entropies.append(entropy)
 
@@ -113,7 +118,7 @@ def train(rank, cfg, shared_model, shared_blocker_model, counter, lock, optimize
                     shared_labels.append(block_decision)
 
                 # Calculate uncertainty (entropy) of CNN output
-                blocker_model_prob = F.softmax(blocker_model_output, dim=-1)
+                blocker_model_prob = torch.nn.functional.softmax(blocker_model_output, dim=-1)
                 blocker_model_prob = torch.clamp(blocker_model_prob, min=1e-6)
                 blocker_model_entropy = -(blocker_model_prob * blocker_model_prob.log()).sum().item()
 
@@ -174,3 +179,69 @@ def train(rank, cfg, shared_model, shared_blocker_model, counter, lock, optimize
 
         ensure_shared_grads(model, shared_model)
         optimizer.step()
+
+class A3CTrainer:
+    def __init__(self, cfg, exp_dir):
+        self.cfg = cfg
+        self.exp_dir = exp_dir
+
+    def train(self):
+        cfg = self.cfg
+
+        mp.set_start_method('spawn')
+
+        torch.manual_seed(cfg.seed)
+
+        # Create shared policy model
+        env = create_atari_env(cfg.env.name)
+        shared_model = ActorCritic(env.observation_space.shape[0], env.action_space)
+        shared_model.share_memory()
+
+        # Create shared CNN classifier model
+        shared_blocker_model = CNNClassifier(env.action_space.n)
+        shared_blocker_model.share_memory()
+
+        # Create shared optimizer
+        if cfg.no_shared:
+            optimizer = None
+            blocker_model_optimizer = None
+        else:
+            # Optimizer for the policy model
+            optimizer = my_optim.SharedAdam(shared_model.parameters(), lr=cfg.algorithm.lr)
+            optimizer.share_memory()
+
+            # Optimizer for the CNN classifier
+            blocker_model_optimizer = my_optim.SharedAdam(shared_blocker_model.parameters(), lr=cfg.algorithm.blocker_model_lr)
+            blocker_model_optimizer.share_memory()
+
+        use_wandb = True if cfg.wandb else False
+
+        processes = []
+
+        # Shared counter and lock
+        counter = mp.Value('i', 0)
+        lock = mp.Lock()
+
+        # Shared lists for aggregated observations and labels
+        manager = mp.Manager()
+        all_observations = manager.list()
+        all_labels = manager.list()
+
+        # Start a separate process for testing
+        p = mp.Process(target=test, args=(cfg.num_processes, cfg, shared_model, shared_blocker_model, counter, lock, use_wandb, cfg.experiment_name))
+        p.start()
+        processes.append(p)
+
+        # Start the CNN training process
+        p = mp.Process(target=blocker_train, args=(cfg, shared_blocker_model, all_observations, all_labels, counter, lock, use_wandb, cfg.experiment_name))
+        p.start()
+        processes.append(p)
+
+        # Start the training processes
+        for rank in range(0, cfg.num_processes):
+            p = mp.Process(target=train, args=(rank, cfg, shared_model, shared_blocker_model, counter, lock, optimizer, blocker_model_optimizer, all_observations, all_labels))
+            p.start()
+            processes.append(p)
+
+        for p in processes:
+            p.join()
