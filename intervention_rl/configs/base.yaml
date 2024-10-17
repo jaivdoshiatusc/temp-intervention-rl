@@ -1,0 +1,46 @@
+device: cuda
+exp_name: intervention_rl
+
+seed: 42
+
+skip_first_eval: False
+debug: False
+  
+train:
+  save_model: True
+  save_blocker_model: True
+
+eval:
+  verbose: 1
+  
+vis:
+  fps: 20
+  save_video: False
+
+hp_name: e-${env.name}_a-${algo.name}_op-${algo[${algo.name}].blocker_switch_time}_t-${algo[${algo.name}].total_timesteps}_s-${seed}
+
+wandb:
+  use: True
+  project: modified_hirl
+  name: intervention_rl_${hp_name}
+  entity: intervention_rl
+
+defaults:
+  - _self_
+  - env: pong
+  - algo: a2c
+  - override hydra/job_logging: disabled
+  # - override hydra/launcher: local
+
+hydra:
+  job:
+    name: ${hp_name}  
+    chdir: False
+
+  output_subdir: null
+  run:
+    dir: results/${hp_name}/${now:%Y-%m-%d}-${now:%H-%M-%S}
+  
+  sweep:
+    dir: results/${now:%Y-%m-%d}-${now:%H-%M-%S}
+    subdir: ${hp_name}

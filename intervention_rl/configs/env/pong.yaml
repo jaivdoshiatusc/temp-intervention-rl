@@ -1,0 +1,9 @@
+defaults: 
+    - base
+    
+name: 'PongNoFrameskip-v4'
+obs_dim: 1
+action_dim: 6
+max_timesteps: 1000
+n_envs: 6
+n_stack: 4

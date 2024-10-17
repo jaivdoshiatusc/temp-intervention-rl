@@ -1,0 +1,38 @@
+name: a2c  # algorithm name
+
+a2c:
+  total_timesteps: 8000000          # Total training timesteps
+  log_freq: 20000                   # Log every log_freq timesteps
+  eval_freq: 20000                  # Evaluate every eval_freq timesteps
+  eval_episodes: 10                 # Number of episodes to evaluate
+  save_freq: 1000000                # Save model every save_freq timesteps
+  
+  policy: CnnPolicy                 # Policy model to use (MlpPolicy, CnnPolicy, ...)
+  policy_kwargs: {}                 # Additional arguments for policy model
+  
+  learning_rate: 1e-4               # Learning rate for A2C
+  n_steps: 5                        # Number of steps in rollout
+  gamma: 0.99                       # Discount factor
+  gae_lambda: 1                     # GAE (Generalized Advantage Estimation) lambda
+  ent_coef: 0                       # Entropy coefficient
+  vf_coef: 0.5                      # Value function coefficient
+  max_grad_norm: 0.5                # Max norm for gradient clipping
+  rms_prop_eps: 1e-5                # Epsilon for RMSProp optimizer
+  use_rms_prop: true                # Use RMSProp optimizer
+  use_sde: false                    # Use State Dependent Exploration (SDE)
+  sde_sample_freq: -1               # SDE sampling frequency
+  normalize_advantage: false        # Normalize advantage estimates
+  verbose: 1                        # Verbosity level
+
+  # Blocker-related hyperparameters
+  use_blocker: true                 # Whether to use the blocker
+  train_blocker: true               # Whether to train the blocker
+  use_hirl: false                   # Whether to use human intervention baseline
+  blocker_switch_time: 100000      # Timesteps before switching blocker behavior
+  pretrained_blocker: null          # Path to pretrained blocker weights (if any)
+  alpha: 0.01                       # Alpha coefficient for reward modification
+  beta: 0.01                        # Beta coefficient for reward modification
+
+  blocker_train_freq: 10000         # Train blocker every blocker_train_freq timesteps
+  blocker_epochs: 4                 # Number of epochs to train the blocker
+  blocker_save_freq: 10000          # Save blocker model every blocker_save_freq timesteps

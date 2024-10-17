@@ -1,62 +1,51 @@
 import os
-import numpy as np
 import torch
 import gymnasium as gym
-from omegaconf import DictConfig, OmegaConf  # Import OmegaConf for config conversion
-from stable_baselines3 import A2C
-from stable_baselines3.common.vec_env import DummyVecEnv
-from stable_baselines3.common.callbacks import EvalCallback
+from omegaconf import DictConfig, OmegaConf
+from intervention_rl.utils.my_a2c import A2C_HIRL
+from intervention_rl.utils.callback_eval import CustomEvalCallback
+from intervention_rl.utils.callback_blocker import BlockerTrainingCallback
+from stable_baselines3.common.callbacks import CallbackList, CheckpointCallback
+from stable_baselines3.common.vec_env import VecTransposeImage
+from stable_baselines3.common.vec_env import VecFrameStack
+from stable_baselines3.common.env_util import make_atari_env
 import wandb
-
-# Custom Observation Wrapper to permute the observation space to (channels, height, width)
-class ChannelFirstWrapper(gym.ObservationWrapper):
-    def __init__(self, env):
-        super(ChannelFirstWrapper, self).__init__(env)
-        obs_shape = env.observation_space.shape
-        self.observation_space = gym.spaces.Box(
-            low=env.observation_space.low.transpose(2, 0, 1),
-            high=env.observation_space.high.transpose(2, 0, 1),
-            shape=(obs_shape[2], obs_shape[0], obs_shape[1]),
-            dtype=env.observation_space.dtype
-        )
-
-    def observation(self, obs):
-        return np.transpose(obs, (2, 0, 1))
-
-def make_env(env_name, seed):
-    env = gym.make(env_name)
-    env = ChannelFirstWrapper(env)  # Apply the custom wrapper
-    if seed is not None:
-        env.seed(seed)
-    return env
 
 class A2CTrainer:
     def __init__(self, cfg: DictConfig, exp_dir: str):
-        # Extract parameters from config
         self.cfg = cfg
-        self.env_name = cfg.env.name
-        self.total_timesteps = cfg.algo.a2c.total_timesteps
-        self.save_path = os.path.join(exp_dir)  # Save model to exp_dir
+        self.exp_dir = exp_dir
+        self.agent_save_path = os.path.join(exp_dir, "agent")
+        self.blocker_save_path = os.path.join(exp_dir, "blocker")
         self.device = torch.device(cfg.device)
-        self.log_freq = cfg.algo.a2c.log_freq
-        self.eval_freq = cfg.algo.a2c.eval_freq
 
         sanitized_config = OmegaConf.to_container(self.cfg, resolve=True)
 
-        wandb.init(
-            project="modified_hirl",
-            name="experiment_name",
-            config=sanitized_config, 
-            sync_tensorboard=True  
-        )
+        if cfg.wandb.use:
+            wandb.init(
+                project=cfg.wandb.project,
+                name=cfg.hp_name,
+                config=sanitized_config,
+                sync_tensorboard=True
+            )
 
-        # Create the environment and wrap it, with seeding
-        self.env = DummyVecEnv([lambda: make_env(self.env_name, cfg.seed)])
+        # Create necessary directories for saving models
+        os.makedirs(self.agent_save_path, exist_ok=True)
+        os.makedirs(self.blocker_save_path, exist_ok=True)
 
-        # Create A2C model
-        self.model = A2C(
-            cfg.algo.a2c.policy,
-            self.env,
+        # Setup environment
+        self.env = make_atari_env(cfg.env.name, n_envs=cfg.env.n_envs, seed=cfg.seed)
+        self.env = VecFrameStack(self.env, n_stack=cfg.env.n_stack)
+        self.env = VecTransposeImage(self.env)
+
+        self.eval_env = make_atari_env(cfg.env.name, n_envs=1, seed=cfg.seed + 100)
+        self.eval_env = VecFrameStack(self.eval_env, n_stack=cfg.env.n_stack)
+        self.eval_env = VecTransposeImage(self.eval_env)
+
+        # Initialize the model (A2C_HIRL)
+        self.model = A2C_HIRL(
+            policy=cfg.algo.a2c.policy,
+            env=self.env,
             learning_rate=cfg.algo.a2c.learning_rate,
             n_steps=cfg.algo.a2c.n_steps,
             gamma=cfg.algo.a2c.gamma,
@@ -69,48 +58,58 @@ class A2CTrainer:
             use_sde=cfg.algo.a2c.use_sde,
             sde_sample_freq=cfg.algo.a2c.sde_sample_freq,
             normalize_advantage=cfg.algo.a2c.normalize_advantage,
-            verbose=1,
+            verbose=cfg.algo.a2c.verbose,
             seed=cfg.seed,
             device=cfg.device,
-            tensorboard_log=f"runs/{wandb.run.id}"  
+            tensorboard_log=os.path.join(exp_dir, "tensorboard"),
+
+            use_blocker=cfg.algo.a2c.use_blocker,
+            train_blocker=cfg.algo.a2c.train_blocker,
+            use_hirl=cfg.algo.a2c.use_hirl,
+            blocker_switch_time=cfg.algo.a2c.blocker_switch_time,
+            pretrained_blocker=cfg.algo.a2c.pretrained_blocker,
+            alpha=cfg.algo.a2c.alpha,
+            beta=cfg.algo.a2c.beta,
         )
 
     def train(self):
-        eval_env = DummyVecEnv([lambda: make_env(self.env_name, self.cfg.seed + 100)])
-
-        num_eval_episodes = self.cfg.eval.num_rollouts
-
-        eval_callback = EvalCallback(
-            eval_env=eval_env,
+        # Custom evaluation callback
+        eval_callback = CustomEvalCallback(
+            eval_env=self.eval_env,
             eval_freq=self.cfg.algo.a2c.eval_freq,
-            n_eval_episodes=num_eval_episodes,
-            best_model_save_path=None,  
-            verbose=1  
+            n_eval_episodes=self.cfg.algo.a2c.eval_episodes,
+            verbose=self.cfg.eval.verbose
         )
 
+        callback_list = [eval_callback]
+
+        # Blocker training callback with saving functionality
+        if self.cfg.algo.a2c.use_blocker and self.cfg.algo.a2c.train_blocker:
+            blocker_callback = BlockerTrainingCallback(
+                train_freq=self.cfg.algo.a2c.blocker_train_freq,   # Frequency of blocker training
+                epochs=self.cfg.algo.a2c.blocker_epochs,           # Number of epochs to train the blocker
+                save_freq=self.cfg.algo.a2c.blocker_save_freq,     # Frequency of saving blocker model weights
+                save_path=self.blocker_save_path,                  # Directory to save blocker model weights
+                name_prefix="blocker_model",                       # Prefix for saved blocker model files
+                verbose=self.cfg.algo.a2c.verbose
+            )
+
+            callback_list.append(blocker_callback)
+
+        # Checkpoint callback to save agent weights
+        checkpoint_callback = CheckpointCallback(
+            save_freq=self.cfg.algo.a2c.save_freq,             # Save frequency from config
+            save_path=self.agent_save_path,                    # Directory to save the models
+            name_prefix="a2c_hirl_model"                       # Prefix for the saved model files
+        )
+        callback_list.append(checkpoint_callback)
+
+        # Combine callbacks into a CallbackList
+        callback_list = CallbackList(callback_list)
+
+        # Start training
         self.model.learn(
-            total_timesteps=self.total_timesteps,
-            callback=eval_callback,
-            log_interval=self.log_freq,
+            total_timesteps=self.cfg.algo.a2c.total_timesteps,
+            callback=callback_list,
+            log_interval=self.cfg.algo.a2c.log_freq,
         )
-
-        self.model.save(self.save_path)
-        print(f"Final model saved after {self.total_timesteps} timesteps")
-
-    def save_model(self):
-        self.model.save(self.save_path)
-
-    def load_model(self, path):
-        self.model = A2C.load(path, env=self.env)
-        print(f"Model loaded from {path}")
-
-    def run_trained_model(self, episodes=5):
-        for episode in range(episodes):
-            obs = self.env.reset()
-            done = [False]
-            episode_reward = 0
-            while not done[0]:
-                action, _states = self.model.predict(obs, deterministic=True)
-                obs, reward, done, _ = self.env.step(action)
-                episode_reward += reward
-            print(f"Episode {episode + 1}: Reward: {episode_reward}")
