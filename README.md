@@ -10,5 +10,5 @@ Intervention-RL is a reinforcement learning (RL) framework designed for developi
 
 ## Usage
 1. Navigate to the project directory: `cd intervention-rl`
-2. Run the main script: `python -m scripts.main`
-3. Customize Config Variables: `python -m scripts.main wandb=False`
+2. Run the main script: `python -m scripts.train`
+3. Customize Config Variables: `python -m scripts.train wandb=False`
