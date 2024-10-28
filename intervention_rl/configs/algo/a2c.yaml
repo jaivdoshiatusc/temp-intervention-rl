@@ -4,14 +4,16 @@ a2c:
   total_timesteps: 8000000          # Total training timesteps
   log_freq: 20000                   # Log every log_freq timesteps
   eval_freq: 20000                  # Evaluate every eval_freq timesteps
-  eval_episodes: 10                 # Number of episodes to evaluate
-  save_freq: 1000000                # Save model every save_freq timesteps
+  gif_freq: 100000                  # Generate gif every gif_freq timesteps
+  eval_episodes: 6                  # Number of episodes to evaluate
+  eval_seed: 63                     # Seed for evaluation
+  save_freq: 300000                 # Save model every save_freq timesteps
   
-  policy: CnnPolicy                 # Policy model to use (MlpPolicy, CnnPolicy, ...)
+  policy: "CnnPolicy"               # Policy model to use (MlpPolicy, CnnPolicy, ...)
   policy_kwargs: {}                 # Additional arguments for policy model
   
   learning_rate: 1e-4               # Learning rate for A2C
-  n_steps: 5                        # Number of steps in rollout
+  n_steps: 32                       # Number of steps in rollout
   gamma: 0.99                       # Discount factor
   gae_lambda: 1                     # GAE (Generalized Advantage Estimation) lambda
   ent_coef: 0                       # Entropy coefficient
@@ -25,14 +27,12 @@ a2c:
   verbose: 1                        # Verbosity level
 
   # Blocker-related hyperparameters
-  use_blocker: true                 # Whether to use the blocker
-  train_blocker: true               # Whether to train the blocker
-  use_hirl: false                   # Whether to use human intervention baseline
-  blocker_switch_time: 100000      # Timesteps before switching blocker behavior
-  pretrained_blocker: null          # Path to pretrained blocker weights (if any)
+  exp_type: "none"                  # Type of methods (none, expert, ours, hirl)
+  pretrained_blocker: None          # Path to pretrained blocker weights (if any)
+  blocker_switch_time: 100000       # Timesteps before switching blocker behavior
   alpha: 0.01                       # Alpha coefficient for reward modification
   beta: 0.01                        # Beta coefficient for reward modification
 
-  blocker_train_freq: 10000         # Train blocker every blocker_train_freq timesteps
   blocker_epochs: 4                 # Number of epochs to train the blocker
+  blocker_train_freq: 10000         # Train blocker every blocker_train_freq timesteps
   blocker_save_freq: 10000          # Save blocker model every blocker_save_freq timesteps

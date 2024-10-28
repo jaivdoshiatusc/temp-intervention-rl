@@ -27,12 +27,18 @@ class BlockerHeuristic:
         if y is None:
             return False
         return y > self.PLAY_AREA[1] - self.clearance
+    
+    def is_block_zone(self, obs):
+        y = self.paddle_bottom(obs)
+        if y is None:
+            return False
+        return y > self.PLAY_AREA[1] - self.clearance - self.block_clearance
 
     def should_block(self, obs, action):
         if obs is None:
             return False
         if self.is_catastrophe(obs):
             return True
-        elif self.is_catastrophe(obs) and action not in [2, 4]:
+        elif self.is_block_zone(obs) and action not in [2, 4]:
             return True
         return False

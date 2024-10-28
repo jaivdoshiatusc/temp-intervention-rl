@@ -3,7 +3,7 @@
 #SBATCH --ntasks=1                # Number of tasks (processes)
 #SBATCH --cpus-per-task=8         # Number of CPU cores per task
 #SBATCH --partition=gpu           # Partition (queue) to submit to
-#SBATCH --gpus-per-task=v100:1    # Request 1 V100 GPU
+#SBATCH --gpus-per-task=p100:1    # Request 1 V100 GPU
 #SBATCH --mem=30G                 # Total memory
 #SBATCH --account=biyik_1165      # Account name
 #SBATCH --output=/home1/jpdoshi/intervention-rl/intervention_rl/slurm_outputs/%x-%j.out  # Output file
@@ -18,4 +18,4 @@ conda activate intervention_rl
 export PYTHONPATH=$PYTHONPATH:/home1/jpdoshi/intervention-rl
 
 # Run using the module system
-python -m scripts.train algo.a2c.train_blocker=False seed=43
+python -m scripts.train algo.a2c.exp_type="expert_hirl" seed=42 algo.a2c.learning_rate=0.05 env.catastrophe_clearance=8 env.blocker_clearance=8

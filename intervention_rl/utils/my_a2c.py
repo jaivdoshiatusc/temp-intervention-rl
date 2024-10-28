@@ -1,16 +1,12 @@
 from stable_baselines3 import A2C
+import numpy as np
 import torch as th
 import numpy as np
 from gymnasium import spaces
 from stable_baselines3.common.utils import obs_as_tensor
+
 from intervention_rl.utils.my_blocker_trainer import BlockerTrainer
 from intervention_rl.utils.my_blocker_heuristic import BlockerHeuristic
-from stable_baselines3.common.running_mean_std import RunningMeanStd
-
-import os
-from PIL import Image
-import numpy as np
-import sys
 
 class A2C_HIRL(A2C):
     def __init__(
@@ -39,13 +35,14 @@ class A2C_HIRL(A2C):
         device="auto",
         _init_setup_model=True,
 
-        use_blocker=True,
-        train_blocker=True,
-        use_hirl=False,
-        blocker_switch_time=100000,
+        exp_type="none",
         pretrained_blocker=None,
+        blocker_switch_time=100000,
         alpha=0.01,
         beta=0.01,
+
+        blocker_clearance = 8,
+        catastrophe_clearance = 8,
     ):
         super().__init__(
             policy,
@@ -73,31 +70,61 @@ class A2C_HIRL(A2C):
             _init_setup_model,
         )
 
-        self.use_blocker = use_blocker
-        self.train_blocker = train_blocker
-        self.use_hirl = use_hirl
-        self.blocker_switch_time = blocker_switch_time
+        # Initialize blocker variables
+        self.exp_type = exp_type # Type of methods (none, expert, ours, hirl)
         self.pretrained_blocker = pretrained_blocker
+        self.blocker_switch_time = blocker_switch_time
         self.alpha = alpha
         self.beta = beta
+        self.catastrophe_clearance = catastrophe_clearance
+        self.blocker_clearance = blocker_clearance
 
-        if self.use_blocker:
-            if self.train_blocker and self.pretrained_blocker is None:
-                self.blocker_experiment_type = "default"
-            elif not self.train_blocker and self.pretrained_blocker is None:
-                self.blocker_experiment_type = "heuristic"
-            elif not self.train_blocker and self.pretrained_blocker is not None:
-                self.blocker_experiment_type = "pretrained"
-            
+        # Initialize cumulative variables
+        self.cum_catastrophe = 0
+        self.cum_env_intervention = 0
+        self.cum_exp_intervention = 0
+        self.cum_disagreement = 0
+
+        # Initialize moving average variables
+        self.mean_bonus = 0.0
+        self.mean_model_entropy = 0.0
+        self.mean_disagreement_prob = 0.0
+        self.ema_alpha = 0.1  # Adjust alpha as needed (smoothing factor)
+
+        # Initialize episode variables
+        self._current_episode_reward = np.zeros(self.env.num_envs)
+        self._current_episode_length = np.zeros(self.env.num_envs)
+
+        self.blocker_heuristic = BlockerHeuristic(self.catastrophe_clearance, self.blocker_clearance)
+        if self.exp_type in ["ours", "hirl"]:
+            self.blocker_heuristic = BlockerHeuristic(self.catastrophe_clearance, self.blocker_clearance)
             self.blocker_model = BlockerTrainer(action_size=env.action_space.n, device=self.device)
-            self.blocker_heuristic = BlockerHeuristic()
 
-            if self.pretrained_blocker is not None:
-                self.pretrained_blocker_model = BlockerTrainer(
-                    action_size=env.action_space.n, 
-                    device=self.device,
-                    pretrained_weights_path=self.pretrained_blocker
-                    )
+            # if self.pretrained_blocker is not None:
+            #     self.pretrained_blocker_model = BlockerTrainer(
+            #         action_size=env.action_space.n, 
+            #         device=self.device,
+            #         pretrained_weights_path=self.pretrained_blocker
+            #         )
+    
+    def _recalculate_log_prob_and_value(self, action, obs_tensor):
+        """
+        Recalculates the log probability and value of the given action using the policy.
+        Ensures the action is passed as a tensor.
+        """
+        with th.no_grad():
+            # Get the policy's action distribution and value for the current observation
+            pi_dist = self.policy.get_distribution(obs_tensor)
+            value = self.policy.predict_values(obs_tensor)
+
+            # Ensure that action is a tensor
+            if not isinstance(action, th.Tensor):
+                action = th.tensor(action, device=self.device)
+
+            # Compute the log probability
+            log_prob = pi_dist.log_prob(action)
+
+        return log_prob, value
 
     def collect_rollouts(self, env, callback, rollout_buffer, n_rollout_steps):
         """
@@ -117,13 +144,18 @@ class A2C_HIRL(A2C):
         # Switch to eval mode (this affects batch norm / dropout)
         self.policy.set_training_mode(False)
 
-        n_steps = 0
+        n_steps = 0 # Controls the number of iterations of the while loop in the collect_rollouts method.
         rollout_buffer.reset()
         # Sample new weights for the state dependent exploration
         if self.use_sde:
             self.policy.reset_noise(env.num_envs)
 
         callback.on_rollout_start()
+
+        total_bonus = 0
+        total_model_entropy = 0
+        total_disagreement_prob = 0
+        num_env_steps = 0  # Tracks the total number of environment steps taken during the current rollout across all environments.
 
         while n_steps < n_rollout_steps:
             if self.use_sde and self.sde_sample_freq > 0 and n_steps % self.sde_sample_freq == 0:
@@ -149,97 +181,132 @@ class A2C_HIRL(A2C):
                     # as we are sampling from an unbounded Gaussian distribution
                     clipped_actions = np.clip(actions, self.action_space.low, self.action_space.high)
 
-            import ipdb; ipdb.set_trace()
+            modified_actions = clipped_actions.copy()
 
-            # Blocker logic
-            if self.use_blocker:
-                # Extract full observations before any preprocessing
+            # Intervention logic
+            if self.exp_type != "none":
                 full_obs_all = [env.venv.envs[i].unwrapped.render() for i in range(env.num_envs)]
+
                 model_entropy_arr = []
                 disagreement_prob_arr = []
 
                 for i in range(env.num_envs):
                     obs = full_obs_all[i]
                     action = clipped_actions[i]
+
                     if isinstance(action, np.ndarray):
                         action = action.item()
+
                     blocker_heuristic_decision = False
                     blocker_model_decision = False
 
-                    if self.blocker_experiment_type == "default":
+                    if self.exp_type in ["ours", "hirl"]:
+                        # Human Oversight Phase (Training the Blocker)
                         if self.num_timesteps <= self.blocker_switch_time:
                             blocker_heuristic_decision = self.blocker_heuristic.should_block(obs, action)
                             blocker_model_decision, model_entropy, disagreement_prob = self.blocker_model.should_block(
-                                obs, 
-                                action, 
+                                obs,
+                                action,
                                 blocker_heuristic_decision
-                                )
+                            )
                             model_entropy_arr.append(model_entropy)
                             disagreement_prob_arr.append(disagreement_prob)
 
+                            # Track total_model_entropy, total_disagreement_prob
+                            total_model_entropy += model_entropy
+                            total_disagreement_prob += disagreement_prob
+
                             self.blocker_model.store(obs, action, blocker_heuristic_decision)
 
                             if blocker_heuristic_decision:
                                 clipped_actions[i] = 2
-                                with th.no_grad():
-                                    pi_dist = self.policy.get_distribution(obs_tensor[i:i+1])
-                                    log_prob = pi_dist.log_prob(th.tensor([clipped_actions[i]], device=self.device))
-                                log_probs[i] = log_prob
+                                log_probs[i], values[i] = self._recalculate_log_prob_and_value(clipped_actions[i], obs_tensor[i:i+1])
+
+                                # Track cum_env_intervention, cum_exp_interventions
+                                self.cum_env_intervention += 1
+                                self.cum_exp_intervention += 1
+                            if blocker_heuristic_decision != blocker_model_decision:
+                                # Track cum_disagreement
+                                self.cum_disagreement += 1
+                        
+                        # Blocker Phase
                         else:
-                            blocker_model_decision, _, _ = self.blocker_model.should_block(obs, action, None)
-
-                            if blocker_model_decision:
-                                clipped_actions[i] = 2
-                                with th.no_grad():
-                                    pi_dist = self.policy.get_distribution(obs_tensor[i:i+1])
-                                    log_prob = pi_dist.log_prob(th.tensor([clipped_actions[i]], device=self.device))
-                                log_probs[i] = log_prob
-
-                    elif self.blocker_experiment_type == "pretrained":
-                        if self.num_timesteps <= self.blocker_switch_time:
                             blocker_heuristic_decision = self.blocker_heuristic.should_block(obs, action)
-                            blocker_model_decision, model_entropy, disagreement_prob = self.blocker_model.should_block(obs, action, blocker_heuristic_decision)
-                            model_entropy_arr.append(model_entropy), disagreement_prob_arr.append(disagreement_prob)
-
-                            self.blocker_model.store(obs, action, blocker_heuristic_decision)
-
-                            if blocker_heuristic_decision:
-                                clipped_actions[i] = 2
-                                with th.no_grad():
-                                    pi_dist = self.policy.get_distribution(obs_tensor[i:i+1])
-                                    log_prob = pi_dist.log_prob(th.tensor([clipped_actions[i]], device=self.device))
-                                log_probs[i] = log_prob
-                        else:
-                            blocker_model_decision, _, _ = self.pretrained_blocker_model.should_block(obs, action)
+                            # is action shape correct?
+                            blocker_model_decision, _, _ = self.blocker_model.should_block(
+                                obs,
+                                action,
+                                blocker_heuristic_decision
+                            )
 
                             if blocker_model_decision:
                                 clipped_actions[i] = 2
-                                with th.no_grad():
-                                    pi_dist = self.policy.get_distribution(obs_tensor[i:i+1])
-                                    log_prob = pi_dist.log_prob(th.tensor([clipped_actions[i]], device=self.device))
-                                log_probs[i] = log_prob.cpu().numpy()
+                                log_probs[i], values[i] = self._recalculate_log_prob_and_value(clipped_actions[i], obs_tensor[i:i+1])
+                                # Track cum_env_intervention
+                                self.cum_env_intervention += 1
+                            if blocker_heuristic_decision:
+                                # Track cum_exp_intervention
+                                self.cum_exp_intervention += 1
+                            if blocker_heuristic_decision != blocker_model_decision:
+                                # Track cum_disagreement
+                                self.cum_disagreement += 1
 
-                    elif self.blocker_experiment_type == "heuristic":
+                    elif self.exp_type == "expert_ours":
                         blocker_heuristic_decision = self.blocker_heuristic.should_block(obs, action)
 
                         if blocker_heuristic_decision:
-                            clipped_actions[i] = 2
-                            with th.no_grad():
-                                pi_dist = self.policy.get_distribution(obs_tensor[i:i+1])
-                                log_prob = pi_dist.log_prob(th.tensor([clipped_actions[i]], device=self.device))
-                            log_probs[i] = log_prob
+                                clipped_actions[i] = 2
+                                log_probs[i], values[i] = self._recalculate_log_prob_and_value(clipped_actions[i], obs_tensor[i:i+1])
+                                # Track cum_env_intervention, cum_exp_interventions
+                                self.cum_env_intervention += 1
+                                self.cum_exp_intervention += 1
+
+                    elif self.exp_type == "expert_hirl":
+                        blocker_heuristic_decision = self.blocker_heuristic.should_block(obs, action)
+
+                        if blocker_heuristic_decision:
+                                modified_actions[i] = 2
+                                # Track cum_env_intervention, cum_exp_interventions
+                                self.cum_env_intervention += 1
+                                self.cum_exp_intervention += 1
 
             # Step environment
-            new_obs, rewards, dones, infos = env.step(clipped_actions)
+            if self.exp_type == "expert_hirl":
+                new_obs, rewards, dones, infos = env.step(modified_actions)
+            else:
+                new_obs, rewards, dones, infos = env.step(clipped_actions)
 
             # Increment time step
             self.num_timesteps += env.num_envs
+            num_env_steps += env.num_envs
 
-            # Modify rewards if necessary
-            if self.use_blocker and not self.use_hirl:
+            # Update rewards with bonus
+            if self.exp_type == "ours" and self.num_timesteps <= self.blocker_switch_time:
                 for i in range(env.num_envs):
-                    if (self.blocker_experiment_type == "default" or self.blocker_experiment_type == "pretrained") and self.num_timesteps <= self.blocker_switch_time:
-                        rewards[i] += self.alpha * model_entropy_arr[i] + self.beta * disagreement_prob_arr[i]
+                    bonus = (self.alpha * model_entropy_arr[i]) + (self.beta * disagreement_prob_arr[i])
+                    rewards[i] += bonus
+                    total_bonus += bonus
+
+            # Update cumulative episode reward and length
+            self._current_episode_reward += rewards
+            self._current_episode_length += 1
+
+            # Check for episode ends and update ep_info_buffer
+            for i in range(env.num_envs):
+                if dones[i]:
+                    # Episode is done, store episode info with modified rewards
+                    ep_info = {"r": self._current_episode_reward[i], "l": self._current_episode_length[i]}
+                    self.ep_info_buffer.append(ep_info)
+
+                    # Reset current episode reward and length for this environment
+                    self._current_episode_reward[i] = 0
+                    self._current_episode_length[i] = 0
+
+            # Process new observations for catastrophes
+            for i in range(env.num_envs):
+                full_obs = env.venv.envs[i].unwrapped.render()
+                if self.blocker_heuristic.is_catastrophe(full_obs):
+                    self.cum_catastrophe += 1
 
             # Give access to local variables
             callback.update_locals(locals())
@@ -251,7 +318,7 @@ class A2C_HIRL(A2C):
 
             if isinstance(self.action_space, spaces.Discrete):
                 # Reshape in case of discrete action
-                actions = actions.reshape(-1, 1)
+                clipped_actions = clipped_actions.reshape(-1, 1)
 
             # Handle timeout by bootstraping with value function
             # see GitHub issue #633
@@ -268,7 +335,7 @@ class A2C_HIRL(A2C):
 
             rollout_buffer.add(
                 self._last_obs,  # type: ignore[arg-type]
-                actions,
+                clipped_actions,
                 rewards,
                 self._last_episode_starts,  # type: ignore[arg-type]
                 values,
@@ -282,6 +349,38 @@ class A2C_HIRL(A2C):
             values = self.policy.predict_values(obs_as_tensor(new_obs, self.device))  # type: ignore[arg-type]
 
         rollout_buffer.compute_returns_and_advantage(last_values=values, dones=dones)
+
+        # Avoid division by zero
+        if num_env_steps == 0:
+            num_env_steps = 1
+
+        # Compute current mean values over the rollout
+        current_mean_bonus = total_bonus / num_env_steps
+        current_mean_model_entropy = total_model_entropy / num_env_steps
+        current_mean_disagreement_prob = total_disagreement_prob / num_env_steps
+
+        # Update rolling averages using EMA
+        self.mean_bonus = (self.ema_alpha * current_mean_bonus) + (1 - self.ema_alpha) * self.mean_bonus
+        self.mean_model_entropy = (self.ema_alpha * current_mean_model_entropy) + (1 - self.ema_alpha) * self.mean_model_entropy
+        self.mean_disagreement_prob = (self.ema_alpha * current_mean_disagreement_prob) + (1 - self.ema_alpha) * self.mean_disagreement_prob
+
+        blocker_switch = int(self.num_timesteps <= self.blocker_switch_time)
+
+        # Log variables
+        self.logger.record('rollout/cum_catastrophe', self.cum_catastrophe)
+        self.logger.record('rollout/cum_env_intervention', self.cum_env_intervention)
+        self.logger.record('rollout/cum_exp_intervention', self.cum_exp_intervention)
+        self.logger.record('rollout/cum_disagreement', self.cum_disagreement)
+        self.logger.record('rollout/mean_bonus', self.mean_bonus)
+        self.logger.record('rollout/mean_model_entropy', self.mean_model_entropy)
+        self.logger.record('rollout/mean_disagreement_prob', self.mean_disagreement_prob)
+        self.logger.record('rollout/blocker_switch', blocker_switch)
+
+        if len(self.ep_info_buffer) > 0:
+            ep_rew_mean = np.mean([ep_info["r"] for ep_info in self.ep_info_buffer])
+            ep_len_mean = np.mean([ep_info["l"] for ep_info in self.ep_info_buffer])
+            self.logger.record('rollout/ep_rew_mean', ep_rew_mean)
+            self.logger.record('rollout/ep_len_mean', ep_len_mean)
 
         callback.update_locals(locals())
 

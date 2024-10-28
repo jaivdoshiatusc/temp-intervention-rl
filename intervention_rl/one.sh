@@ -18,4 +18,4 @@ conda activate intervention_rl
 export PYTHONPATH=$PYTHONPATH:/home1/jpdoshi/intervention-rl
 
 # Run using the module system
-python -m scripts.train algo.a2c.use_blocker=False algo.a2c.learning_rate=1e-5
+python -m scripts.train algo.a2c.exp_type="none" seed=42 algo.a2c.learning_rate=0.05 env.catastrophe_clearance=8 env.blocker_clearance=8

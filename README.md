@@ -10,5 +10,14 @@ Intervention-RL is a reinforcement learning (RL) framework designed for developi
 
 ## Usage
 1. Navigate to the project directory: `cd intervention-rl`
-2. Run the main script: `python -m scripts.train`
-3. Customize Config Variables: `python -m scripts.train wandb=False`
+2. Run the main script: `python -m scripts.train algo.a2c.exp_type="none"`
+3. Choose between the following intervention strategies:
+    - `"none"`: No blocker
+    - `"expert_hirl"`: Algorithmic blocker, uses robot actions in buffer
+    - `"expert_hirl"`: Algorithmic blocker, uses human actions in buffer
+    - `"hirl"`: Uses trained blocker, without reward bonus
+    - `"ours"`: Uses trained blocker, with reward bonus
+4. Customize configuration variables:
+    ```bash
+    python -m scripts.train algo.a2c.exp_type="ours" seed=42 algo.a2c.learning_rate=0.001 env.catastrophe_clearance=8 env.blocker_clearance=8
+    ```

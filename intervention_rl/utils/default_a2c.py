@@ -3,7 +3,6 @@ import torch as th
 import numpy as np
 from gymnasium import spaces
 from stable_baselines3.common.utils import obs_as_tensor
-# from intervention_rl.utils.my_pong_blocker import Blocker
 
 class A2C_HIRL(A2C):
     def __init__(self, 

@@ -3,8 +3,11 @@ import torch
 import gymnasium as gym
 from omegaconf import DictConfig, OmegaConf
 from intervention_rl.utils.my_a2c import A2C_HIRL
-from intervention_rl.utils.callback_eval import CustomEvalCallback
+# from intervention_rl.utils.default_a2c import A2C_HIRL
+from intervention_rl.utils.callback_eval_pong import PongEvalCallback
+from stable_baselines3.common.callbacks import EvalCallback  # Imported EvalCallback
 from intervention_rl.utils.callback_blocker import BlockerTrainingCallback
+from intervention_rl.utils.callback_checkpoints import CustomCheckpointCallback
 from stable_baselines3.common.callbacks import CallbackList, CheckpointCallback
 from stable_baselines3.common.vec_env import VecTransposeImage
 from stable_baselines3.common.vec_env import VecFrameStack
@@ -63,44 +66,64 @@ class A2CTrainer:
             device=cfg.device,
             tensorboard_log=os.path.join(exp_dir, "tensorboard"),
 
-            use_blocker=cfg.algo.a2c.use_blocker,
-            train_blocker=cfg.algo.a2c.train_blocker,
-            use_hirl=cfg.algo.a2c.use_hirl,
-            blocker_switch_time=cfg.algo.a2c.blocker_switch_time,
+            exp_type=cfg.algo.a2c.exp_type,
             pretrained_blocker=cfg.algo.a2c.pretrained_blocker,
+            blocker_switch_time=cfg.algo.a2c.blocker_switch_time,
             alpha=cfg.algo.a2c.alpha,
             beta=cfg.algo.a2c.beta,
+
+            catastrophe_clearance=cfg.env.catastrophe_clearance,
+            blocker_clearance=cfg.env.blocker_clearance,
         )
 
     def train(self):
         # Custom evaluation callback
-        eval_callback = CustomEvalCallback(
+        eval_callback = PongEvalCallback(
+            cfg = self.cfg,
             eval_env=self.eval_env,
             eval_freq=self.cfg.algo.a2c.eval_freq,
+            eval_seed =self.cfg.algo.a2c.eval_seed,
+            gif_freq=self.cfg.algo.a2c.gif_freq,
             n_eval_episodes=self.cfg.algo.a2c.eval_episodes,
-            verbose=self.cfg.eval.verbose
+            verbose=self.cfg.eval.verbose,
         )
+
+        # eval_callback = EvalCallback(
+        #     eval_env=self.eval_env,
+        #     best_model_save_path=self.agent_save_path,
+        #     log_path=self.agent_save_path,
+        #     eval_freq=self.cfg.algo.a2c.eval_freq,
+        #     n_eval_episodes=self.cfg.algo.a2c.eval_episodes,
+        #     verbose=self.cfg.eval.verbose
+        # )
 
         callback_list = [eval_callback]
 
-        # Blocker training callback with saving functionality
-        if self.cfg.algo.a2c.use_blocker and self.cfg.algo.a2c.train_blocker:
-            blocker_callback = BlockerTrainingCallback(
-                train_freq=self.cfg.algo.a2c.blocker_train_freq,   # Frequency of blocker training
-                epochs=self.cfg.algo.a2c.blocker_epochs,           # Number of epochs to train the blocker
-                save_freq=self.cfg.algo.a2c.blocker_save_freq,     # Frequency of saving blocker model weights
-                save_path=self.blocker_save_path,                  # Directory to save blocker model weights
-                name_prefix="blocker_model",                       # Prefix for saved blocker model files
-                verbose=self.cfg.algo.a2c.verbose
-            )
+        # # Blocker training callback with saving functionality
+        # if self.cfg.algo.a2c.use_blocker and self.cfg.algo.a2c.train_blocker:
+        #     blocker_callback = BlockerTrainingCallback(
+        #         train_freq=self.cfg.algo.a2c.blocker_train_freq,   # Frequency of blocker training
+        #         epochs=self.cfg.algo.a2c.blocker_epochs,           # Number of epochs to train the blocker
+        #         save_freq=self.cfg.algo.a2c.blocker_save_freq,     # Frequency of saving blocker model weights
+        #         save_path=self.blocker_save_path,                  # Directory to save blocker model weights
+        #         name_prefix="blocker_model",                       # Prefix for saved blocker model files
+        #         verbose=self.cfg.algo.a2c.verbose
+        #     )
 
-            callback_list.append(blocker_callback)
+        #     callback_list.append(blocker_callback)
 
         # Checkpoint callback to save agent weights
-        checkpoint_callback = CheckpointCallback(
+        # checkpoint_callback = CheckpointCallback(
+        #     save_freq=self.cfg.algo.a2c.save_freq,             # Save frequency from config
+        #     save_path=self.agent_save_path,                    # Directory to save the models
+        #     name_prefix="a2c_hirl_model"                       # Prefix for the saved model files
+        # )
+        # callback_list.append(checkpoint_callback)
+
+        checkpoint_callback = CustomCheckpointCallback(
             save_freq=self.cfg.algo.a2c.save_freq,             # Save frequency from config
             save_path=self.agent_save_path,                    # Directory to save the models
-            name_prefix="a2c_hirl_model"                       # Prefix for the saved model files
+            name_prefix="a2c_hirl_model",                      # Prefix for the saved model files
         )
         callback_list.append(checkpoint_callback)
 

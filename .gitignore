@@ -1,7 +1,11 @@
+*.sh
 wandb/
 build/
 outputs/
+results/
 __pycache__/
+test/
+debug_images/
 .ruff_cache/
 slurm_outputs/
 slurm_scripts/

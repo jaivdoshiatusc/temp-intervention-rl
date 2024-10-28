@@ -17,7 +17,7 @@ vis:
   fps: 20
   save_video: False
 
-hp_name: e-${env.name}_a-${algo.name}_op-${algo[${algo.name}].blocker_switch_time}_t-${algo[${algo.name}].total_timesteps}_s-${seed}
+hp_name: e-pong_a-${algo.name}_op-${algo[${algo.name}].blocker_switch_time}_t-${algo[${algo.name}].total_timesteps}_s-${seed}
 
 wandb:
   use: True

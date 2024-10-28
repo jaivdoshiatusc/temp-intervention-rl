@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --time=4:00:00            # Maximum runtime
+#SBATCH --time=10:00:00            # Maximum runtime
 #SBATCH --ntasks=1                # Number of tasks (processes)
 #SBATCH --cpus-per-task=8         # Number of CPU cores per task
 #SBATCH --partition=gpu           # Partition (queue) to submit to
@@ -18,4 +18,4 @@ conda activate intervention_rl
 export PYTHONPATH=$PYTHONPATH:/home1/jpdoshi/intervention-rl
 
 # Run using the module system
-python -m scripts.train algo.a2c.use_blocker=False algo.a2c.learning_rate=1e-3
+python -m scripts.train algo.a2c.exp_type="expert_hirl" seed=42 algo.a2c.learning_rate=0.001 env.catastrophe_clearance=8 env.blocker_clearance=8 algo.a2c.total_timesteps=14000000

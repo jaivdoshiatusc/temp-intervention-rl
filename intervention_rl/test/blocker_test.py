@@ -4,14 +4,16 @@ from stable_baselines3.common.env_util import make_atari_env
 from stable_baselines3.common.vec_env import VecFrameStack, VecTransposeImage
 import cv2
 import imageio
+import random
 
-class PaddleHandler:
+
+class BlockerHeuristic:
     TOLERANCE = 0.01
     PADDLE_COLUMN = 143
     PADDLE_COLOR = np.array([92, 186, 92])
     PLAY_AREA = [34, 34 + 160]
-    DEFAULT_CLEARANCE = 16
-    DEFAULT_BLOCK_CLEARANCE = 16
+    DEFAULT_CLEARANCE = 8
+    DEFAULT_BLOCK_CLEARANCE = 8
 
     def __init__(self, clearance=None, block_clearance=None):
         self.clearance = clearance if clearance is not None else self.DEFAULT_CLEARANCE
@@ -32,6 +34,21 @@ class PaddleHandler:
         if y is None:
             return False
         return y > self.PLAY_AREA[1] - self.clearance
+    
+    def is_block_zone(self, obs):
+        y = self.paddle_bottom(obs)
+        if y is None:
+            return False
+        return y > self.PLAY_AREA[1] - self.clearance - self.block_clearance
+
+    def should_block(self, obs, action):
+        if obs is None:
+            return False
+        if self.is_catastrophe(obs):
+            return True
+        elif self.is_block_zone(obs) and action not in [2, 4]:
+            return True
+        return False
 
 def main():
     # Create the environment
@@ -41,45 +58,70 @@ def main():
     env = VecFrameStack(env, n_stack=4)
     env = VecTransposeImage(env)
     
-    paddle_handler = PaddleHandler()
+    blocker_heuristic = BlockerHeuristic()
     
     env.reset()
     
     total_steps = 200
     actions = []
-    # Create action pattern: 1 for 20 steps, 2 for 20 steps, and repeat
-    for i in range(total_steps):
-        if ((i // 20) % 2) == 0:
-            action = 2
-        else:
-            action = 3
-        actions.append(action)
+    
+    # Random upward movement between 1 to 5 steps
+    random_up_steps = random.randint(1, 5)
+    print(f'Random upward steps: {random_up_steps}')
+    upward_steps = 0
+    move_down = False
     
     frames = []
-    
-    for i, action in enumerate(actions):
+
+    for i in range(total_steps):
+        # Decide action based on the policy (either up or down)
+        if not move_down:
+            if upward_steps < random_up_steps:
+                action = 2  # Move the paddle up (action 2)
+                upward_steps += 1
+            else:
+                move_down = True
+        else:
+            action = 3  # Move the paddle down (action 3)
+
+        # Fetch the current observation for BlockerHeuristic
+        obs = env.envs[0].unwrapped.render()
+        
+        # Apply BlockerHeuristic to potentially override the downward action (action 3)
+        if i > 50:
+            if blocker_heuristic.should_block(obs, action):
+                action = 2  # Override and block by moving up if needed
+        
+        # Now that the action is finalized (policy or blocked), step in the environment
         obs, rewards, terminated, truncated = env.step([action])
-        # Get the original Atari frame (210, 160, 3)
         original_obs = env.envs[0].unwrapped.render()
 
+        # Convert to BGR for OpenCV
+        img = cv2.cvtColor(original_obs, cv2.COLOR_RGB2BGR)        
+        actions.append(action)
+
+        # Annotate the action on the image
+        action_text = f'Action: {action}'
+        cv2.putText(img, action_text, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+
         # Check for catastrophe using the original observation
-        is_catastrophe = paddle_handler.is_catastrophe(original_obs)
+        is_catastrophe = blocker_heuristic.is_catastrophe(original_obs)
         if is_catastrophe:
             # Draw 'catastrophe' on the image
-            img = cv2.cvtColor(original_obs, cv2.COLOR_RGB2BGR)
-            cv2.putText(img, 'catastrophe', (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255,255,255), 2)
-            # Convert back to RGB
-            original_obs = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            cv2.putText(img, 'catastrophe', (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
 
         # Draw 1-pixel horizontal lines at 162 and 178 pixels
         line_color = (255, 0, 0)  # Blue color in BGR format
-        cv2.line(original_obs, (0, 162), (original_obs.shape[1], 162), line_color, 1)
-        cv2.line(original_obs, (0, 178), (original_obs.shape[1], 178), line_color, 1)
+        cv2.line(img, (0, 162), (img.shape[1], 162), line_color, 1)
+        cv2.line(img, (0, 178), (img.shape[1], 178), line_color, 1)
+
+        # Convert back to RGB for image saving
+        original_obs = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
         frames.append(original_obs)
-    
+
     # Save the frames as a GIF with 10 fps
-    imageio.mimsave('output.gif', frames, fps=2)
+    imageio.mimsave('output.gif', frames, fps=10)
 
 if __name__ == '__main__':
     main()
