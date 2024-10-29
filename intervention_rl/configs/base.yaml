@@ -2,22 +2,17 @@ device: cuda
 exp_name: intervention_rl
 
 seed: 42
+exp_type: "none"                  # Type of methods (none, expert, ours, hirl)
+pretrained_blocker: None          # Path to pretrained blocker weights (if any)
 
-skip_first_eval: False
-debug: False
-  
 train:
   save_model: True
   save_blocker_model: True
 
 eval:
   verbose: 1
-  
-vis:
-  fps: 20
-  save_video: False
 
-hp_name: e-pong_a-${algo.name}_op-${algo[${algo.name}].blocker_switch_time}_t-${algo[${algo.name}].total_timesteps}_s-${seed}
+hp_name: e-${env.short_name}_a-${algo.name}_et-${exp_type}_gae-${algo[${algo.name}].gae_lambda}_ent-${algo[${algo.name}].ent_coef}_lr-${algo[${algo.name}].learning_rate}_ns-${algo[${algo.name}].n_steps}_s-${seed}
 
 wandb:
   use: True
@@ -30,7 +25,7 @@ defaults:
   - env: pong
   - algo: a2c
   - override hydra/job_logging: disabled
-  # - override hydra/launcher: local
+  - override hydra/launcher: local
 
 hydra:
   job:

@@ -5,8 +5,10 @@ import numpy as np
 from gymnasium import spaces
 from stable_baselines3.common.utils import obs_as_tensor
 
-from intervention_rl.utils.my_blocker_trainer import BlockerTrainer
-from intervention_rl.utils.my_blocker_heuristic import BlockerHeuristic
+from intervention_rl.utils.pong_blocker_trainer import PongBlockerTrainer
+from intervention_rl.utils.mc_blocker_trainer import MCBlockerTrainer
+from intervention_rl.utils.pong_blocker_heuristic import PongBlockerHeuristic
+from intervention_rl.utils.mc_blocker_heuristic import MCBlockerHeuristic
 
 class A2C_HIRL(A2C):
     def __init__(
@@ -35,9 +37,11 @@ class A2C_HIRL(A2C):
         device="auto",
         _init_setup_model=True,
 
+        env_name="PongNoFrameskip-v4",
         exp_type="none",
         pretrained_blocker=None,
         blocker_switch_time=100000,
+        new_action=2,
         alpha=0.01,
         beta=0.01,
 
@@ -71,9 +75,11 @@ class A2C_HIRL(A2C):
         )
 
         # Initialize blocker variables
+        self.env_name = env_name
         self.exp_type = exp_type # Type of methods (none, expert, ours, hirl)
         self.pretrained_blocker = pretrained_blocker
         self.blocker_switch_time = blocker_switch_time
+        self.new_action = new_action
         self.alpha = alpha
         self.beta = beta
         self.catastrophe_clearance = catastrophe_clearance
@@ -95,10 +101,16 @@ class A2C_HIRL(A2C):
         self._current_episode_reward = np.zeros(self.env.num_envs)
         self._current_episode_length = np.zeros(self.env.num_envs)
 
-        self.blocker_heuristic = BlockerHeuristic(self.catastrophe_clearance, self.blocker_clearance)
-        if self.exp_type in ["ours", "hirl"]:
-            self.blocker_heuristic = BlockerHeuristic(self.catastrophe_clearance, self.blocker_clearance)
-            self.blocker_model = BlockerTrainer(action_size=env.action_space.n, device=self.device)
+        if "Pong" in self.env_name:
+            self.blocker_heuristic = PongBlockerHeuristic(self.catastrophe_clearance, self.blocker_clearance)
+            if self.exp_type in ["ours", "hirl"]:
+                self.blocker_heuristic = PongBlockerHeuristic(self.catastrophe_clearance, self.blocker_clearance)
+                self.blocker_model = PongBlockerTrainer(action_size=env.action_space.n, device=self.device)
+        elif "MountainCar" in self.env_name:
+            self.blocker_heuristic = MCBlockerHeuristic(self.catastrophe_clearance)
+            if self.exp_type in ["ours", "hirl"]:
+                self.blocker_heuristic = MCBlockerHeuristic(self.catastrophe_clearance)
+                self.blocker_model = MCBlockerTrainer(action_size=env.action_space.n, device=self.device)
 
             # if self.pretrained_blocker is not None:
             #     self.pretrained_blocker_model = BlockerTrainer(
@@ -219,7 +231,7 @@ class A2C_HIRL(A2C):
                             self.blocker_model.store(obs, action, blocker_heuristic_decision)
 
                             if blocker_heuristic_decision:
-                                clipped_actions[i] = 2
+                                clipped_actions[i] = self.new_action
                                 log_probs[i], values[i] = self._recalculate_log_prob_and_value(clipped_actions[i], obs_tensor[i:i+1])
 
                                 # Track cum_env_intervention, cum_exp_interventions
@@ -240,7 +252,7 @@ class A2C_HIRL(A2C):
                             )
 
                             if blocker_model_decision:
-                                clipped_actions[i] = 2
+                                clipped_actions[i] = self.new_action
                                 log_probs[i], values[i] = self._recalculate_log_prob_and_value(clipped_actions[i], obs_tensor[i:i+1])
                                 # Track cum_env_intervention
                                 self.cum_env_intervention += 1
@@ -255,7 +267,7 @@ class A2C_HIRL(A2C):
                         blocker_heuristic_decision = self.blocker_heuristic.should_block(obs, action)
 
                         if blocker_heuristic_decision:
-                                clipped_actions[i] = 2
+                                clipped_actions[i] = self.new_action
                                 log_probs[i], values[i] = self._recalculate_log_prob_and_value(clipped_actions[i], obs_tensor[i:i+1])
                                 # Track cum_env_intervention, cum_exp_interventions
                                 self.cum_env_intervention += 1
@@ -265,7 +277,7 @@ class A2C_HIRL(A2C):
                         blocker_heuristic_decision = self.blocker_heuristic.should_block(obs, action)
 
                         if blocker_heuristic_decision:
-                                modified_actions[i] = 2
+                                modified_actions[i] = self.new_action
                                 # Track cum_env_intervention, cum_exp_interventions
                                 self.cum_env_intervention += 1
                                 self.cum_exp_intervention += 1

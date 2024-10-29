@@ -8,3 +8,6 @@ max_timesteps: null
 
 cam_height: null
 cam_width: null
+
+catastrophe_clearance: null
+blocker_clearance: null

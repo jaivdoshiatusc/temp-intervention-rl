@@ -1,15 +1,12 @@
 defaults: 
     - base
-
+    
 # Environment-specific hyperparameters
-name: 'PongNoFrameskip-v4'
-short_name: 'pong'
+name: 'MountainCar-v0'
+short_name: 'mc'
 new_action: 2
-catastrophe_clearance: 8
-blocker_clearance: 8
-obs_dim: 1
-action_dim: 6
-max_timesteps: 1000
+catastrophe_clearance: -1.15
+max_timesteps: 200
 n_envs: 16
 n_stack: 4
 

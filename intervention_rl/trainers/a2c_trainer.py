@@ -1,18 +1,25 @@
 import os
 import torch
+import wandb
 import gymnasium as gym
 from omegaconf import DictConfig, OmegaConf
-from intervention_rl.utils.my_a2c import A2C_HIRL
+
+# Defaults
 # from intervention_rl.utils.default_a2c import A2C_HIRL
-from intervention_rl.utils.callback_eval_pong import PongEvalCallback
-from stable_baselines3.common.callbacks import EvalCallback  # Imported EvalCallback
-from intervention_rl.utils.callback_blocker import BlockerTrainingCallback
-from intervention_rl.utils.callback_checkpoints import CustomCheckpointCallback
-from stable_baselines3.common.callbacks import CallbackList, CheckpointCallback
+# from stable_baselines3.common.callbacks import EvalCallback
+# from stable_baselines3.common.callbacks import CheckpointCallback
+from stable_baselines3.common.callbacks import CallbackList
 from stable_baselines3.common.vec_env import VecTransposeImage
 from stable_baselines3.common.vec_env import VecFrameStack
 from stable_baselines3.common.env_util import make_atari_env
-import wandb
+from stable_baselines3.common.env_util import make_vec_env
+
+# Custom
+from intervention_rl.utils.my_a2c import A2C_HIRL
+from intervention_rl.utils.callback_eval_pong import PongEvalCallback
+from intervention_rl.utils.callback_eval_mc import MCEvalCallback
+from intervention_rl.utils.callback_blocker import BlockerTrainingCallback
+from intervention_rl.utils.callback_checkpoints import CustomCheckpointCallback
 
 class A2CTrainer:
     def __init__(self, cfg: DictConfig, exp_dir: str):
@@ -36,14 +43,18 @@ class A2CTrainer:
         os.makedirs(self.agent_save_path, exist_ok=True)
         os.makedirs(self.blocker_save_path, exist_ok=True)
 
-        # Setup environment
-        self.env = make_atari_env(cfg.env.name, n_envs=cfg.env.n_envs, seed=cfg.seed)
-        self.env = VecFrameStack(self.env, n_stack=cfg.env.n_stack)
-        self.env = VecTransposeImage(self.env)
+        # Determine if the environment is an Atari game
+        if "Pong" in cfg.env.name:  # Use Atari wrappers for Atari environments
+            self.env = make_atari_env(cfg.env.name, n_envs=cfg.env.n_envs, seed=cfg.seed)
+            self.env = VecFrameStack(self.env, n_stack=cfg.env.n_stack)
+            self.env = VecTransposeImage(self.env)
 
-        self.eval_env = make_atari_env(cfg.env.name, n_envs=1, seed=cfg.seed + 100)
-        self.eval_env = VecFrameStack(self.eval_env, n_stack=cfg.env.n_stack)
-        self.eval_env = VecTransposeImage(self.eval_env)
+            self.eval_env = make_atari_env(cfg.env.name, n_envs=1, seed=cfg.seed + 100)
+            self.eval_env = VecFrameStack(self.eval_env, n_stack=cfg.env.n_stack)
+            self.eval_env = VecTransposeImage(self.eval_env)
+        else:  # Use standard Gym vectorized environments for non-Atari environments
+            self.env = make_vec_env(cfg.env.name, n_envs=cfg.env.n_envs, seed=cfg.seed)
+            self.eval_env = make_vec_env(cfg.env.name, n_envs=1, seed=cfg.seed + 100)
 
         # Initialize the model (A2C_HIRL)
         self.model = A2C_HIRL(
@@ -66,11 +77,13 @@ class A2CTrainer:
             device=cfg.device,
             tensorboard_log=os.path.join(exp_dir, "tensorboard"),
 
-            exp_type=cfg.algo.a2c.exp_type,
-            pretrained_blocker=cfg.algo.a2c.pretrained_blocker,
-            blocker_switch_time=cfg.algo.a2c.blocker_switch_time,
-            alpha=cfg.algo.a2c.alpha,
-            beta=cfg.algo.a2c.beta,
+            env_name=cfg.env.name,
+            exp_type=cfg.exp_type,
+            pretrained_blocker=cfg.pretrained_blocker,
+            blocker_switch_time=cfg.env.blocker_switch_time,
+            new_action=cfg.env.new_action,
+            alpha=cfg.env.alpha,
+            beta=cfg.env.beta,
 
             catastrophe_clearance=cfg.env.catastrophe_clearance,
             blocker_clearance=cfg.env.blocker_clearance,
@@ -81,10 +94,10 @@ class A2CTrainer:
         eval_callback = PongEvalCallback(
             cfg = self.cfg,
             eval_env=self.eval_env,
-            eval_freq=self.cfg.algo.a2c.eval_freq,
-            eval_seed =self.cfg.algo.a2c.eval_seed,
-            gif_freq=self.cfg.algo.a2c.gif_freq,
-            n_eval_episodes=self.cfg.algo.a2c.eval_episodes,
+            eval_freq=self.cfg.env.eval_freq,
+            eval_seed =self.cfg.env.eval_seed,
+            gif_freq=self.cfg.env.gif_freq,
+            n_eval_episodes=self.cfg.env.eval_episodes,
             verbose=self.cfg.eval.verbose,
         )
 
@@ -102,9 +115,9 @@ class A2CTrainer:
         # # Blocker training callback with saving functionality
         # if self.cfg.algo.a2c.use_blocker and self.cfg.algo.a2c.train_blocker:
         #     blocker_callback = BlockerTrainingCallback(
-        #         train_freq=self.cfg.algo.a2c.blocker_train_freq,   # Frequency of blocker training
-        #         epochs=self.cfg.algo.a2c.blocker_epochs,           # Number of epochs to train the blocker
-        #         save_freq=self.cfg.algo.a2c.blocker_save_freq,     # Frequency of saving blocker model weights
+        #         train_freq=self.cfg.env.blocker_train_freq,   # Frequency of blocker training
+        #         epochs=self.cfg.env.blocker_epochs,           # Number of epochs to train the blocker
+        #         save_freq=self.cfg.env.blocker_save_freq,     # Frequency of saving blocker model weights
         #         save_path=self.blocker_save_path,                  # Directory to save blocker model weights
         #         name_prefix="blocker_model",                       # Prefix for saved blocker model files
         #         verbose=self.cfg.algo.a2c.verbose
@@ -121,7 +134,7 @@ class A2CTrainer:
         # callback_list.append(checkpoint_callback)
 
         checkpoint_callback = CustomCheckpointCallback(
-            save_freq=self.cfg.algo.a2c.save_freq,             # Save frequency from config
+            save_freq=self.cfg.env.save_freq,             # Save frequency from config
             save_path=self.agent_save_path,                    # Directory to save the models
             name_prefix="a2c_hirl_model",                      # Prefix for the saved model files
         )
@@ -132,7 +145,7 @@ class A2CTrainer:
 
         # Start training
         self.model.learn(
-            total_timesteps=self.cfg.algo.a2c.total_timesteps,
+            total_timesteps=self.cfg.env.total_timesteps,
             callback=callback_list,
-            log_interval=self.cfg.algo.a2c.log_freq,
+            log_interval=self.cfg.env.log_freq,
         )
