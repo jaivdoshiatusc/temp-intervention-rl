@@ -1,4 +1,5 @@
 *.sh
+*.pth
 wandb/
 build/
 outputs/

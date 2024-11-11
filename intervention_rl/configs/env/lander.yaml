@@ -1,0 +1,9 @@
+defaults: 
+    - base
+    
+# Environment-specific hyperparameters
+name: 'LunarLander-v3'
+short_name: 'll'
+max_timesteps: 1000
+n_envs: 16
+n_stack: 4

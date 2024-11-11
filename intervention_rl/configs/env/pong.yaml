@@ -13,20 +13,6 @@ max_timesteps: 1000
 n_envs: 16
 n_stack: 4
 
-# Training hyperparameters
-total_timesteps: 8000000          # Total training timesteps
-log_freq: 20000                   # Log every log_freq timesteps
-eval_freq: 20000                  # Evaluate every eval_freq timesteps
-gif_freq: 100000                  # Generate gif every gif_freq timesteps
-eval_episodes: 6                  # Number of episodes to evaluate
-eval_seed: 63                     # Seed for evaluation
-save_freq: 300000                 # Save model every save_freq timesteps
-
 # Blocker-related hyperparameters
-blocker_switch_time: 100000       # Timesteps before switching blocker behavior
-alpha: 0.01                       # Alpha coefficient for reward modification
-beta: 0.01                        # Beta coefficient for reward modification
-
-blocker_epochs: 4                 # Number of epochs to train the blocker
-blocker_train_freq: 10000         # Train blocker every blocker_train_freq timesteps
-blocker_save_freq: 10000          # Save blocker model every blocker_save_freq timesteps
+alpha: 0.01  # Alpha coefficient for reward modification
+beta: 0.01   # Beta coefficient for reward modification

@@ -1,21 +1,23 @@
-name: a2c  # algorithm name
+name: ppo  # algorithm name
 
-a2c:
+ppo:
   policy: "CnnPolicy"               # Policy model to use (MlpPolicy, CnnPolicy, ...)
   policy_kwargs: {}                 # Additional arguments for policy model
   
-  learning_rate: 0.001              # Learning rate for A2C
-  n_steps: 32                       # Number of steps in rollout
+  learning_rate: 0.0025             # Learning rate for A2C
+  n_steps: 128                      # Number of steps in rollout
+  batch_size: 256                   # Minibatch size
+  n_epochs: 4                       # Number of optimization epochs
   gamma: 0.99                       # Discount factor
-  gae_lambda: 0.95                  # GAE (Generalized Advantage Estimation) lambda
+  gae_lambda: 0.90                  # GAE (Generalized Advantage Estimation) lambda
+  clip_range: 0.1                   # Clipping parameter, constant c in PPO
+  clip_range_vf: None               # Clipping parameter for the value function, constant c in PPO
+  normalize_advantage: true         # Normalize advantage estimates
   ent_coef: 0.05                    # Entropy coefficient
   vf_coef: 0.5                      # Value function coefficient
   max_grad_norm: 0.5                # Max norm for gradient clipping
-  rms_prop_eps: 1e-5                # Epsilon for RMSProp optimizer
-  use_rms_prop: true                # Use RMSProp optimizer
   use_sde: false                    # Use State Dependent Exploration (SDE)
   sde_sample_freq: -1               # SDE sampling frequency
-  normalize_advantage: true         # Normalize advantage estimates
   verbose: 1                        # Verbosity level
 
   # Training hyperparameters
@@ -23,7 +25,7 @@ a2c:
   log_freq: 20000                   # Log every log_freq timesteps
   eval_freq: 20000                  # Evaluate every eval_freq timesteps
   gif_freq: 100000                  # Generate gif every gif_freq timesteps
-  save_freq: 300000                 # Save model every save_freq timesteps
+  save_freq: 500000                 # Save model every save_freq timesteps
 
   # Blocker-related hyperparameters
   blocker_epochs: 4                 # Number of epochs to train the blocker

@@ -3,16 +3,19 @@ exp_name: intervention_rl
 
 seed: 42
 exp_type: "none"                  # Type of methods (none, expert, ours, hirl)
-pretrained_blocker: None          # Path to pretrained blocker weights (if any)
+pretrained_blocker: null          # Path to pretrained blocker weights (if any)
 
 train:
   save_model: True
   save_blocker_model: True
+  save_blocker_dataset: False
 
 eval:
+  eval_seed: 20                     # Seed for evaluation
+  eval_episodes: 6                  # Number of episodes to evaluate
   verbose: 1
 
-hp_name: e-${env.short_name}_a-${algo.name}_et-${exp_type}_gae-${algo[${algo.name}].gae_lambda}_ent-${algo[${algo.name}].ent_coef}_lr-${algo[${algo.name}].learning_rate}_ns-${algo[${algo.name}].n_steps}_s-${seed}
+hp_name: e-${env.short_name}_a-${algo.name}_et-${exp_type}_ent-${algo[${algo.name}].ent_coef}_al-${env.alpha}_be-${env.beta}_s-${seed}
 
 wandb:
   use: True
@@ -25,7 +28,7 @@ defaults:
   - env: pong
   - algo: a2c
   - override hydra/job_logging: disabled
-  - override hydra/launcher: local
+  # - override hydra/launcher: local
 
 hydra:
   job:
