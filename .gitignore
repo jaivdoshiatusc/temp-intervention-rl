@@ -11,4 +11,5 @@ debug_images/
 slurm_outputs/
 slurm_scripts/
 blocker_weights/
+collected_data/
 intervention_rl.egg-info/
