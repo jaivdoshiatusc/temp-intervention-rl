@@ -6,12 +6,23 @@ import torch
 from gymnasium import spaces
 from stable_baselines3.common.utils import obs_as_tensor
 
-from intervention_rl.blocker.pong_blocker_trainer import PongBlockerTrainer
-from intervention_rl.blocker.mc_blocker_trainer import MCBlockerTrainer
-from intervention_rl.blocker.lander_blocker_trainer import LunarLanderBlockerTrainer
 from intervention_rl.blocker.pong_blocker_heuristic import PongBlockerHeuristic
+from intervention_rl.blocker.pong_blocker_trainer import PongBlockerTrainer
+
 from intervention_rl.blocker.mc_blocker_heuristic import MCBlockerHeuristic
+from intervention_rl.blocker.mc_blocker_trainer import MCBlockerTrainer
+
 from intervention_rl.blocker.lander_blocker_heuristic import LunarLanderBlockerHeuristic
+from intervention_rl.blocker.lander_blocker_trainer import LunarLanderBlockerTrainer
+
+from intervention_rl.blocker.bo_blocker_heuristic import BreakoutBlockerHeuristic
+from intervention_rl.blocker.bo_blocker_trainer import BreakoutBlockerTrainer
+
+from intervention_rl.blocker.ast_blocker_heuristic import AsteroidsBlockerHeuristic
+from intervention_rl.blocker.ast_blocker_trainer import AsteroidsBlockerTrainer
+
+from intervention_rl.blocker.space_blocker_heuristic import SpaceInvadersBlockerHeuristic
+from intervention_rl.blocker.space_blocker_trainer import SpaceInvadersBlockerTrainer
 
 class PPO_HIRL(PPO):
     def __init__(
@@ -48,8 +59,17 @@ class PPO_HIRL(PPO):
         pretrained_blocker=None,
         blocker_switch_time=100000,
         new_action=2,
+
+        bonus_type="catastrophe",
         alpha=0.01,
+        alpha_increase=0.01,
+        max_alpha=500,
         beta=0.01,
+        beta_increase=0.01,
+        max_beta=500,
+        iota=0.50, 
+        penalty_type="none",
+        penalty=0.0,     
 
         blocker_clearance = 8,
         catastrophe_clearance = 8,
@@ -83,14 +103,28 @@ class PPO_HIRL(PPO):
             _init_setup_model
         )
 
+        # Initialize environment variables
+        self.policy_type = policy
+
         # Initialize blocker variables
         self.env_name = env_name
         self.exp_type = exp_type # Type of methods (none, expert, ours, hirl)
         self.pretrained_blocker = pretrained_blocker
         self.blocker_switch_time = blocker_switch_time
         self.new_action = new_action
+
+        self.bonus_type = bonus_type
         self.alpha = alpha
+        self.alpha_increase = alpha_increase
         self.beta = beta
+        self.beta_increase = beta_increase
+        self.iota = iota
+        self.penalty_type = penalty_type
+        self.penalty = penalty
+
+        self.max_alpha = max_alpha
+        self.max_beta = max_beta
+
         self.catastrophe_clearance = catastrophe_clearance
         self.blocker_clearance = blocker_clearance
         self.pretrained_blocker_switch = False
@@ -118,6 +152,9 @@ class PPO_HIRL(PPO):
         self._current_episode_length = np.zeros(self.env.num_envs)
         self._current_episode_catastrophe = np.zeros(self.env.num_envs)
         self._current_episode_total_bonus = np.zeros(self.env.num_envs)
+        self._current_episode_total_penalty = np.zeros(self.env.num_envs)
+        self._current_episode_env_intervention = np.zeros(self.env.num_envs)
+        self._current_episode_exp_intervention = np.zeros(self.env.num_envs)
 
         if "Pong" in self.env_name:
             self.blocker_heuristic = PongBlockerHeuristic(self.catastrophe_clearance, self.blocker_clearance)
@@ -134,6 +171,48 @@ class PPO_HIRL(PPO):
             if self.exp_type in ["ours", "hirl"]:
                 self.blocker_heuristic = LunarLanderBlockerHeuristic()
                 self.blocker_model = LunarLanderBlockerTrainer(action_size=env.action_space.n, device=self.device)
+        elif "Breakout" in self.env_name:
+            self.blocker_heuristic = BreakoutBlockerHeuristic(self.catastrophe_clearance)
+            if self.exp_type in ["ours", "hirl"]:
+                self.blocker_heuristic = BreakoutBlockerHeuristic(self.catastrophe_clearance)
+                self.blocker_model = BreakoutBlockerTrainer(action_size=env.action_space.n, device=self.device)
+        elif "Asteroids" in self.env_name:
+            self.blocker_heuristic = AsteroidsBlockerHeuristic(self.catastrophe_clearance)
+            if self.exp_type in ["ours", "hirl"]:
+                self.blocker_heuristic = AsteroidsBlockerHeuristic(self.catastrophe_clearance)
+                self.blocker_model = AsteroidsBlockerTrainer(action_size=env.action_space.n, device=self.device)
+        elif "Space" in self.env_name:
+            self.blocker_heuristic = SpaceInvadersBlockerHeuristic(self.catastrophe_clearance)
+            if self.exp_type in ["ours", "hirl"]:
+                self.blocker_heuristic = SpaceInvadersBlockerHeuristic(self.catastrophe_clearance)
+                self.blocker_model = SpaceInvadersBlockerTrainer(action_size=env.action_space.n, device=self.device)
+
+    def get_env_state(self, env, env_name, env_idx, policy_type, saved_obs):
+        """
+        Extracts the state or observation for a given environment and index.
+        Returns an 8-dimensional vector for LunarLander.
+        """
+        if "Pong" in env_name:
+            return env.venv.envs[env_idx].unwrapped.render()
+        elif "Breakout" in env_name:
+            return env.venv.envs[env_idx].unwrapped.render()
+        elif "Asteroids" in env_name:
+            return env.venv.envs[env_idx].unwrapped.render()
+        elif "Space" in env_name:
+            return env.venv.envs[env_idx].unwrapped.render()
+        elif "LunarLander" in env_name:
+            return saved_obs[env_idx]
+        elif "MountainCar" in env_name:
+            return saved_obs[env_idx]
+
+        # Default to environment's observation
+        return env.envs[env_idx].unwrapped.state
+    
+    def get_blocker_env_state(self, env, env_name, env_idx, policy_type, saved_obs):
+        if "Space" in env_name or "Asteroids" in env_name:
+            return env.venv.envs[env_idx].unwrapped.ale.getRAM()
+        else:
+            return self.get_env_state(env, env_name, env_idx, policy_type, saved_obs)
 
     def collect_rollouts(self, env, callback, rollout_buffer, n_rollout_steps):
         """
@@ -197,16 +276,20 @@ class PPO_HIRL(PPO):
                     clipped_actions = np.clip(actions, self.action_space.low, self.action_space.high)
 
             modified_actions = clipped_actions.copy()
+            catastrophe_occurred_this_step = [False] * env.num_envs
+            exp_intervention_occurred_this_step = [False] * env.num_envs
+            env_intervention_occurred_this_step = [False] * env.num_envs
 
             # Intervention logic
             if self.exp_type != "none":
-                full_obs_all = [env.venv.envs[i].unwrapped.render() for i in range(env.num_envs)]
-
+                agent_obs_all = [self.get_env_state(env, self.env_name, i, self.policy_type, self._last_obs) for i in range(env.num_envs)] 
+                blocker_heuristic_obs_all = [self.get_blocker_env_state(env, self.env_name, i, self.policy_type, self._last_obs) for i in range(env.num_envs)]               
                 model_entropy_arr = []
                 disagreement_prob_arr = []
 
                 for i in range(env.num_envs):
-                    obs = full_obs_all[i]
+                    agent_obs = agent_obs_all[i]
+                    blocker_heuristic_obs = blocker_heuristic_obs_all[i]
                     action = clipped_actions[i]
 
                     if isinstance(action, np.ndarray):
@@ -218,9 +301,9 @@ class PPO_HIRL(PPO):
                     if self.exp_type in ["ours", "hirl"]:
                         # Human Oversight Phase (Training the Blocker)
                         if self.num_timesteps <= self.blocker_switch_time:
-                            blocker_heuristic_decision = self.blocker_heuristic.should_block(obs, action)
+                            blocker_heuristic_decision = self.blocker_heuristic.should_block(blocker_heuristic_obs, action)
                             blocker_model_decision, model_entropy, disagreement_prob = self.blocker_model.should_block(
-                                obs,
+                                agent_obs,
                                 action,
                                 blocker_heuristic_decision
                             )
@@ -231,7 +314,7 @@ class PPO_HIRL(PPO):
                             total_model_entropy += model_entropy
                             total_disagreement_prob += disagreement_prob
 
-                            self.blocker_model.store(obs, action, blocker_heuristic_decision)
+                            self.blocker_model.store(agent_obs, action, blocker_heuristic_decision)
 
                             if blocker_heuristic_decision:
                                 modified_actions[i] = self.new_action
@@ -239,6 +322,10 @@ class PPO_HIRL(PPO):
                                 # Track cum_env_intervention, cum_exp_interventions
                                 self.cum_env_intervention += 1
                                 self.cum_exp_intervention += 1
+                                self._current_episode_env_intervention[i] += 1
+                                self._current_episode_exp_intervention[i] += 1
+                                exp_intervention_occurred_this_step[i] = True
+                                env_intervention_occurred_this_step[i] = True
                             if blocker_heuristic_decision != blocker_model_decision:
                                 # Track cum_disagreement
                                 self.cum_disagreement += 1
@@ -249,10 +336,10 @@ class PPO_HIRL(PPO):
                                 self.blocker_model.load_weights(self.pretrained_blocker)
                                 self.pretrained_blocker_switch = True
                             
-                            blocker_heuristic_decision = self.blocker_heuristic.should_block(obs, action)
+                            blocker_heuristic_decision = self.blocker_heuristic.should_block(blocker_heuristic_obs, action)
                             # is action shape correct?
                             blocker_model_decision, model_entropy, disagreement_prob = self.blocker_model.should_block(
-                                obs,
+                                agent_obs,
                                 action,
                                 blocker_heuristic_decision
                             )
@@ -267,24 +354,32 @@ class PPO_HIRL(PPO):
                                 modified_actions[i] = self.new_action
                                 # Track cum_env_intervention
                                 self.cum_env_intervention += 1
+                                self._current_episode_env_intervention[i] += 1
                                 self.blocker_cum_env_intervention += 1
+                                env_intervention_occurred_this_step[i] = True
                             if blocker_heuristic_decision:
                                 # Track cum_exp_intervention
                                 self.cum_exp_intervention += 1
+                                self._current_episode_exp_intervention[i] += 1
                                 self.blocker_cum_exp_intervention += 1
+                                exp_intervention_occurred_this_step[i] = True
                             if blocker_heuristic_decision != blocker_model_decision:
                                 # Track cum_disagreement
                                 self.cum_disagreement += 1
                                 self.blocker_cum_disagreement += 1
 
                     elif self.exp_type == "expert":
-                        blocker_heuristic_decision = self.blocker_heuristic.should_block(obs, action)
+                        blocker_heuristic_decision = self.blocker_heuristic.should_block(blocker_heuristic_obs, action)
 
                         if blocker_heuristic_decision:
                                 modified_actions[i] = self.new_action
                                 # Track cum_env_intervention, cum_exp_interventions
                                 self.cum_env_intervention += 1
                                 self.cum_exp_intervention += 1
+                                self._current_episode_env_intervention[i] += 1
+                                self._current_episode_exp_intervention[i] += 1
+                                exp_intervention_occurred_this_step[i] = True
+                                env_intervention_occurred_this_step[i] = True
 
             # Step environment
             if self.exp_type in ["expert", "ours", "hirl"]:
@@ -296,13 +391,62 @@ class PPO_HIRL(PPO):
             self.num_timesteps += env.num_envs
             num_env_steps += env.num_envs
 
-            # Update rewards with bonus
+            # Process new observations for catastrophes
+            for i in range(env.num_envs):
+                blocker_heuristic_obs = self.get_blocker_env_state(env, self.env_name, i, self.policy_type, self._last_obs)
+                if self.blocker_heuristic.is_catastrophe(blocker_heuristic_obs):
+                    self.cum_catastrophe += 1
+                    if self.num_timesteps > self.blocker_switch_time:
+                        self.blocker_cum_catastrophe += 1
+                    self._current_episode_catastrophe[i] += 1
+                    catastrophe_occurred_this_step[i] = True
+                else:
+                    catastrophe_occurred_this_step[i] = False
+            
+            if self.penalty_type == "all":
+                for i in range(env.num_envs):
+                    if env_intervention_occurred_this_step[i]:
+                        rewards[i] -= self.penalty
+                        self._current_episode_total_penalty[i] += self.penalty
+
+            if self.penalty_type == "catastrophe":
+                for i in range(env.num_envs):
+                    if catastrophe_occurred_this_step[i]:
+                        rewards[i] -= self.penalty
+                        self._current_episode_total_penalty[i] += self.penalty
+            
+            if self.penalty_type == "blocker" and self.num_timesteps > self.blocker_switch_time:
+                for i in range(env.num_envs):
+                    if env_intervention_occurred_this_step[i]:
+                        rewards[i] -= self.penalty
+                        self._current_episode_total_penalty[i] += self.penalty
+
+            # Apply bonus based on bonus_type
             if self.exp_type == "ours" and self.num_timesteps <= self.blocker_switch_time:
                 for i in range(env.num_envs):
-                    bonus = (self.alpha * model_entropy_arr[i]) + (self.beta * disagreement_prob_arr[i])
-                    rewards[i] += bonus
-                    total_bonus += bonus
-                    self._current_episode_total_bonus[i] += bonus
+                    if self.bonus_type == 'catastrophe':
+                        if catastrophe_occurred_this_step[i]:
+                            bonus = self.iota
+                            rewards[i] += bonus
+                            total_bonus += bonus
+                            self._current_episode_total_bonus[i] += bonus
+                    elif self.bonus_type == 'intervention':
+                        if exp_intervention_occurred_this_step[i]:
+                            bonus = self.iota
+                            rewards[i] += bonus
+                            total_bonus += bonus
+                            self._current_episode_total_bonus[i] += bonus
+                    elif self.bonus_type == 'blocker':
+                        # Ensure model_entropy_arr and disagreement_prob_arr are available
+                        if len(model_entropy_arr) > i and len(disagreement_prob_arr) > i:
+                            bonus = (self.alpha * model_entropy_arr[i]) + (self.beta * disagreement_prob_arr[i])
+                            rewards[i] += bonus
+                            total_bonus += bonus
+                            self._current_episode_total_bonus[i] += bonus
+
+                        # Increment alpha and beta
+                        self.alpha = min(self.alpha + self.alpha_increase, self.max_alpha)
+                        self.beta = min(self.beta + self.beta_increase, self.max_beta)
 
             # Update cumulative episode reward and length
             self._current_episode_reward += rewards
@@ -310,28 +454,25 @@ class PPO_HIRL(PPO):
 
             # Check for episode ends and update ep_info_buffer
             for i in range(env.num_envs):
-                        if dones[i]:
-                            # Episode is done, store episode info with modified rewards
-                            ep_info = {
-                                "r": self._current_episode_reward[i],
-                                "l": self._current_episode_length[i],
-                                "catastrophes": self._current_episode_catastrophe[i],
-                                "total_bonus": self._current_episode_total_bonus[i],
-                            }
-                            self.custom_ep_info_buffer.append(ep_info)
-                            self._current_episode_reward[i] = 0
-                            self._current_episode_length[i] = 0
-                            self._current_episode_catastrophe[i] = 0
-                            self._current_episode_total_bonus[i] = 0
-
-            # Process new observations for catastrophes
-            for i in range(env.num_envs):
-                full_obs = env.venv.envs[i].unwrapped.render()
-                if self.blocker_heuristic.is_catastrophe(full_obs):
-                    self.cum_catastrophe += 1
-                    if self.num_timesteps > self.blocker_switch_time:
-                        self.blocker_cum_catastrophe += 1
-                    self._current_episode_catastrophe[i] += 1
+                if dones[i]:
+                    # Episode is done, store episode info with modified rewards
+                    ep_info = {
+                        "r": self._current_episode_reward[i],
+                        "l": self._current_episode_length[i],
+                        "catastrophes": self._current_episode_catastrophe[i],
+                        "total_bonus": self._current_episode_total_bonus[i],
+                        "total_penalty": self._current_episode_total_penalty[i],
+                        "env_interventions": self._current_episode_env_intervention[i],
+                        "exp_interventions": self._current_episode_exp_intervention[i],
+                    }
+                    self.custom_ep_info_buffer.append(ep_info)
+                    self._current_episode_reward[i] = 0
+                    self._current_episode_length[i] = 0
+                    self._current_episode_catastrophe[i] = 0
+                    self._current_episode_total_bonus[i] = 0
+                    self._current_episode_total_penalty[i] = 0
+                    self._current_episode_env_intervention[i] = 0
+                    self._current_episode_exp_intervention[i] = 0
 
             # Give access to local variables
             callback.update_locals(locals())
@@ -391,10 +532,12 @@ class PPO_HIRL(PPO):
 
         blocker_switch = int(self.num_timesteps <= self.blocker_switch_time)
 
-        positive_labels, negative_labels = self.blocker_model.get_labels()
-        total_labels = positive_labels + negative_labels
-        positive_proportion = positive_labels / total_labels if total_labels > 0 else 0
-        negative_proportion = negative_labels / total_labels if total_labels > 0 else 0
+        # Get blocker labels
+        if self.exp_type in ["ours", "hirl"]:
+            positive_labels, negative_labels = self.blocker_model.get_labels()
+            total_labels = positive_labels + negative_labels
+            positive_proportion = positive_labels / total_labels if total_labels > 0 else 0
+            negative_proportion = negative_labels / total_labels if total_labels > 0 else 0
 
         # Log variables
         self.logger.record('rollout/cum_catastrophe', self.cum_catastrophe)
@@ -411,21 +554,28 @@ class PPO_HIRL(PPO):
         self.logger.record('rollout/blocker_cum_exp_intervention', self.blocker_cum_exp_intervention)
         self.logger.record('rollout/blocker_cum_disagreement', self.blocker_cum_disagreement)
 
-        self.logger.record('blocker/positive_labels', positive_labels)
-        self.logger.record('blocker/negative_labels', negative_labels)
-        self.logger.record('blocker/positive_proportion', positive_proportion)
-        self.logger.record('blocker/negative_proportion', negative_proportion)
-        self.logger.record('blocker/total_labels', total_labels)
+        if self.exp_type in ["ours", "hirl"]:
+            self.logger.record('blocker/positive_labels', positive_labels)
+            self.logger.record('blocker/negative_labels', negative_labels)
+            self.logger.record('blocker/positive_proportion', positive_proportion)
+            self.logger.record('blocker/negative_proportion', negative_proportion)
+            self.logger.record('blocker/total_labels', total_labels)
 
         if len(self.custom_ep_info_buffer) > 0:
             ep_rew_mean = np.mean([ep_info["r"] for ep_info in self.custom_ep_info_buffer])
             ep_len_mean = np.mean([ep_info["l"] for ep_info in self.custom_ep_info_buffer])
             ep_catastrophe_mean = np.mean([ep_info["catastrophes"] for ep_info in self.custom_ep_info_buffer])
             ep_total_bonus_mean = np.mean([ep_info["total_bonus"] for ep_info in self.custom_ep_info_buffer])
+            ep_total_penalty_mean = np.mean([ep_info["total_penalty"] for ep_info in self.custom_ep_info_buffer])
+            ep_env_intervention_mean = np.mean([ep_info["env_interventions"] for ep_info in self.custom_ep_info_buffer])
+            ep_exp_intervention_mean = np.mean([ep_info["exp_interventions"] for ep_info in self.custom_ep_info_buffer])
             self.logger.record('rollout/ep_rew_mean', ep_rew_mean)
             self.logger.record('rollout/ep_len_mean', ep_len_mean)
             self.logger.record('rollout/ep_catastrophe_mean', ep_catastrophe_mean)
             self.logger.record('rollout/ep_total_bonus_mean', ep_total_bonus_mean)
+            self.logger.record('rollout/ep_total_penalty_mean', ep_total_penalty_mean)
+            self.logger.record('rollout/ep_env_intervention_mean', ep_env_intervention_mean)
+            self.logger.record('rollout/ep_exp_intervention_mean', ep_exp_intervention_mean)
 
         callback.update_locals(locals())
 

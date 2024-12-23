@@ -10,4 +10,5 @@ debug_images/
 .ruff_cache/
 slurm_outputs/
 slurm_scripts/
+blocker_weights/
 intervention_rl.egg-info/

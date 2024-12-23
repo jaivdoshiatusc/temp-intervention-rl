@@ -2,29 +2,48 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+import numpy as np
 from torch.utils.data import Dataset
 
 class BlockerModel(nn.Module):
     def __init__(self, action_size):
         super(BlockerModel, self).__init__()
-        self.conv1 = nn.Conv2d(3, 4, kernel_size=8, stride=4)
+        # Change input channels from 3 to 1 for grayscale input
+        self.conv1 = nn.Conv2d(1, 4, kernel_size=8, stride=4)
         self.conv2 = nn.Conv2d(4, 4, kernel_size=3, stride=2)
 
-        self.fc1 = nn.Linear(4 * 19 * 19 + action_size, 10)
+        # Calculate the size of the flattened conv output
+        # Test with a dummy input to determine the size dynamically
+        self._initialize_weights()
+        test_input = torch.zeros(1, 1, 160, 160)  # Batch size 1, 1 channel, 160x160 grayscale input
+        test_output = self.conv_layers(test_input)
+        conv_output_size = test_output.view(1, -1).shape[1]
+
+        self.fc1 = nn.Linear(conv_output_size + action_size, 10)
         self.fc2 = nn.Linear(10, 10)
         self.fc_out = nn.Linear(10, 2)
 
-    def forward(self, obs, action):
-        x = torch.relu(self.conv1(obs))
+    def conv_layers(self, x):
+        x = torch.relu(self.conv1(x))
         x = torch.relu(self.conv2(x))
+        return x
 
-        x = x.view(x.size(0), -1)
+    def forward(self, obs, action):
+        # Process observation through convolutional layers
+        x = self.conv_layers(obs)
+        x = x.view(x.size(0), -1)  # Flatten for fully connected layer
 
-        x = torch.cat([x, action], dim=1)  
+        # Concatenate the flattened conv output with action input
+        x = torch.cat([x, action], dim=1)
 
+        # Process through fully connected layers
         x = torch.relu(self.fc1(x))
         x = torch.relu(self.fc2(x))
         return self.fc_out(x)
+
+    def _initialize_weights(self):
+        # Optionally, you can initialize weights here if required.
+        pass
 
 class BlockerDataset(Dataset):
     def __init__(self, observations, actions, labels, action_size):
@@ -44,9 +63,20 @@ class BlockerDataset(Dataset):
 
     @staticmethod
     def preprocess_obs(obs):
-        obs = obs[34:34 + 160, :160]
-        obs = obs / 255.0  # Normalize pixel values
-        obs = obs.transpose(2, 0, 1)
+        # Crop the observation (extract the play area)
+        obs = obs[34:34 + 160, :160]  # Shape: (160, 160, 3)
+
+        # Convert to grayscale
+        # Using the standard weights for RGB to grayscale conversion
+        obs = np.dot(obs[..., :3], [0.2989, 0.5870, 0.1140])  # Shape: (160, 160)
+
+        # Normalize pixel values
+        obs = obs / 255.0  # Pixel values in [0, 1]
+
+        # Add channel dimension (required for PyTorch Conv2D input)
+        obs = np.expand_dims(obs, axis=0)  # Shape: (1, 160, 160)
+
+        # Convert to float32 tensor
         obs = torch.tensor(obs, dtype=torch.float32)
         return obs
 
@@ -106,9 +136,20 @@ class PongBlockerTrainer:
 
     @staticmethod
     def preprocess_obs(obs):
-        obs = obs[34:34 + 160, :160]
-        obs = obs / 255.0  # Normalize pixel values
-        obs = obs.transpose(2, 0, 1)
+        # Crop the observation (extract the play area)
+        obs = obs[34:34 + 160, :160]  # Shape: (160, 160, 3)
+
+        # Convert to grayscale
+        # Using the standard weights for RGB to grayscale conversion
+        obs = np.dot(obs[..., :3], [0.2989, 0.5870, 0.1140])  # Shape: (160, 160)
+
+        # Normalize pixel values
+        obs = obs / 255.0  # Pixel values in [0, 1]
+
+        # Add channel dimension (required for PyTorch Conv2D input)
+        obs = np.expand_dims(obs, axis=0)  # Shape: (1, 160, 160)
+
+        # Convert to float32 tensor
         obs = torch.tensor(obs, dtype=torch.float32)
         return obs
 

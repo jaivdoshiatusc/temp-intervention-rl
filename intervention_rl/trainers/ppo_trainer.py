@@ -18,6 +18,9 @@ from intervention_rl.trainers.utils.my_ppo import PPO_HIRL
 from intervention_rl.eval.callback_eval_pong import PongEvalCallback
 from intervention_rl.eval.callback_eval_mc import MCEvalCallback
 from intervention_rl.eval.callback_eval_lander import LunarLanderEvalCallback
+from intervention_rl.eval.callback_eval_bo import BreakoutEvalCallback
+from intervention_rl.eval.callback_eval_ast import AsteroidsEvalCallback
+from intervention_rl.eval.callback_eval_space import SpaceInvadersEvalCallback
 from intervention_rl.utils.callback_blocker import BlockerTrainingCallback
 from intervention_rl.utils.callback_checkpoints import CustomCheckpointCallback
 
@@ -44,7 +47,7 @@ class PPOTrainer:
             )
 
         # Determine if the environment is an Atari game
-        if "Pong" in cfg.env.name:  # Use Atari wrappers for Atari environments
+        if any(game in cfg.env.name for game in ["Pong", "Breakout", "Space", "Asteroids"]):  # Use Atari wrappers for Atari environments
             self.env = make_atari_env(cfg.env.name, n_envs=cfg.env.n_envs, seed=cfg.seed)
             self.env = VecFrameStack(self.env, n_stack=cfg.env.n_stack)
             self.env = VecTransposeImage(self.env)
@@ -82,10 +85,19 @@ class PPOTrainer:
             env_name=cfg.env.name,
             exp_type=cfg.exp_type,
             pretrained_blocker=cfg.pretrained_blocker,
-            blocker_switch_time=cfg.algo.ppo.blocker_switch_time,
+            blocker_switch_time=cfg.env.blocker_switch_time,
             new_action=cfg.env.new_action,
+
+            bonus_type=cfg.env.bonus_type,
             alpha=cfg.env.alpha,
+            alpha_increase=cfg.env.alpha_increase,
+            max_alpha=cfg.env.max_alpha,
             beta=cfg.env.beta,
+            beta_increase=cfg.env.beta_increase,
+            max_beta=cfg.env.max_beta,
+            iota=cfg.env.iota,
+            penalty_type=cfg.env.penalty_type,
+            penalty=cfg.env.penalty,
 
             catastrophe_clearance=cfg.env.catastrophe_clearance,
             blocker_clearance=cfg.env.blocker_clearance,
@@ -97,10 +109,53 @@ class PPOTrainer:
             eval_callback = PongEvalCallback(
                 cfg = self.cfg,
                 eval_env=self.eval_env,
-                eval_freq=self.cfg.algo.ppo.eval_freq,
+                eval_freq=self.cfg.env.eval_freq,
                 eval_seed =self.cfg.eval.eval_seed,
-                gif_freq=self.cfg.algo.ppo.gif_freq,
+                gif_freq=self.cfg.env.gif_freq,
                 n_eval_episodes=self.cfg.eval.eval_episodes,
+                new_action=self.cfg.env.new_action,
+                verbose=self.cfg.eval.verbose,
+            )
+
+            callback_list = [eval_callback]
+        
+        elif "Breakout" in self.cfg.env.name:
+            eval_callback = BreakoutEvalCallback(
+                cfg = self.cfg,
+                eval_env=self.eval_env,
+                eval_freq=self.cfg.env.eval_freq,
+                eval_seed =self.cfg.eval.eval_seed,
+                gif_freq=self.cfg.env.gif_freq,
+                n_eval_episodes=self.cfg.eval.eval_episodes,
+                new_action=self.cfg.env.new_action,
+                verbose=self.cfg.eval.verbose,
+            )
+
+            callback_list = [eval_callback]
+
+        elif "Asteroids"  in self.cfg.env.name: 
+            eval_callback = AsteroidsEvalCallback(
+                cfg = self.cfg,
+                eval_env=self.eval_env,
+                eval_freq=self.cfg.env.eval_freq,
+                eval_seed =self.cfg.eval.eval_seed,
+                gif_freq=self.cfg.env.gif_freq,
+                n_eval_episodes=self.cfg.eval.eval_episodes,
+                new_action=self.cfg.env.new_action,
+                verbose=self.cfg.eval.verbose,
+            )
+
+            callback_list = [eval_callback]
+
+        elif "Space" in self.cfg.env.name:
+            eval_callback = SpaceInvadersEvalCallback(
+                cfg = self.cfg,
+                eval_env=self.eval_env,
+                eval_freq=self.cfg.env.eval_freq,
+                eval_seed =self.cfg.eval.eval_seed,
+                gif_freq=self.cfg.env.gif_freq,
+                n_eval_episodes=self.cfg.eval.eval_episodes,
+                new_action=self.cfg.env.new_action,
                 verbose=self.cfg.eval.verbose,
             )
 
@@ -110,10 +165,11 @@ class PPOTrainer:
             eval_callback = MCEvalCallback(
                 cfg = self.cfg,
                 eval_env=self.eval_env,
-                eval_freq=self.cfg.algo.ppo.eval_freq,
+                eval_freq=self.cfg.env.eval_freq,
                 eval_seed =self.cfg.eval.eval_seed,
-                gif_freq=self.cfg.algo.ppo.gif_freq,
+                gif_freq=self.cfg.env.gif_freq,
                 n_eval_episodes=self.cfg.eval.eval_episodes,
+                new_action=self.cfg.env.new_action,
                 verbose=self.cfg.eval.verbose,
             )
 
@@ -123,10 +179,11 @@ class PPOTrainer:
             eval_callback = LunarLanderEvalCallback(
                 cfg = self.cfg,
                 eval_env=self.eval_env,
-                eval_freq=self.cfg.algo.ppo.eval_freq,
+                eval_freq=self.cfg.env.eval_freq,
                 eval_seed =self.cfg.eval.eval_seed,
-                gif_freq=self.cfg.algo.ppo.gif_freq,
+                gif_freq=self.cfg.env.gif_freq,
                 n_eval_episodes=self.cfg.eval.eval_episodes,
+                new_action=self.cfg.env.new_action,
                 verbose=self.cfg.eval.verbose,
             )
 
@@ -135,9 +192,9 @@ class PPOTrainer:
         # Blocker training callback with saving functionality
         if self.cfg.exp_type in ["ours", "hirl"]:
             blocker_callback = BlockerTrainingCallback(
-                train_freq=self.cfg.algo.ppo.blocker_train_freq,   # Frequency of blocker training
-                epochs=self.cfg.algo.ppo.blocker_epochs,           # Number of epochs to train the blocker
-                save_freq=self.cfg.algo.ppo.blocker_save_freq,     # Frequency of saving blocker model weights
+                train_freq=self.cfg.env.blocker_train_freq,   # Frequency of blocker training
+                epochs=self.cfg.env.blocker_epochs,           # Number of epochs to train the blocker
+                save_freq=self.cfg.env.blocker_save_freq,     # Frequency of saving blocker model weights
                 save_path=self.blocker_save_path,                  # Directory to save blocker model weights
                 save_blocker_dataset=self.cfg.train.save_blocker_dataset,
                 name_prefix="blocker_model",                       # Prefix for saved blocker model files
@@ -148,9 +205,9 @@ class PPOTrainer:
 
         # Checkpoint callback to save agent weights
         checkpoint_callback = CustomCheckpointCallback(
-            save_freq=self.cfg.algo.ppo.save_freq,             # Save frequency from config
+            save_freq=self.cfg.env.save_freq,             # Save frequency from config
             save_path=self.agent_save_path,                    # Directory to save the models
-            name_prefix="ppo_hirl_model",                      # Prefix for the saved model files
+            name_prefix="ppo_model",                      # Prefix for the saved model files
         )
         callback_list.append(checkpoint_callback)
 
@@ -159,7 +216,7 @@ class PPOTrainer:
 
         # Start training
         self.model.learn(
-            total_timesteps=self.cfg.algo.ppo.total_timesteps,
+            total_timesteps=self.cfg.env.total_timesteps,
             callback=callback_list,
-            log_interval=self.cfg.algo.ppo.log_freq,
+            log_interval=self.cfg.env.log_freq,
         )

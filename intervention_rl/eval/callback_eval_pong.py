@@ -8,7 +8,7 @@ from stable_baselines3.common.callbacks import BaseCallback
 class PongEvalCallback(BaseCallback):
     PLAY_AREA = [34, 34 + 160]  # Play area in Pong
 
-    def __init__(self, cfg, eval_env, eval_freq, eval_seed, gif_freq, n_eval_episodes, verbose=1):
+    def __init__(self, cfg, eval_env, eval_freq, eval_seed, gif_freq, n_eval_episodes, new_action, verbose=1):
         super(PongEvalCallback, self).__init__(verbose)
         self.eval_env = eval_env
         self.eval_freq = eval_freq
@@ -18,6 +18,8 @@ class PongEvalCallback(BaseCallback):
         self.catastrophe_clearance = cfg.env.catastrophe_clearance
         self.blocker_clearance = cfg.env.blocker_clearance
         self.verbose = verbose
+
+        self.new_action = new_action
 
         self.cum_catastrophe = 0
         self.cum_env_intervention = 0
@@ -113,11 +115,11 @@ class PongEvalCallback(BaseCallback):
                         if blocker_heuristic_decision:
                             episode_env_interventions += 1
                             episode_exp_interventions += 1   
-                            action_item = 2                          
+                            action_item = self.new_action                   
                     else:
                         if blocker_model_decision:
                             episode_env_interventions += 1 
-                            action_item = 2
+                            action_item = self.new_action
                         if blocker_heuristic_decision:
                             episode_exp_interventions += 1                            
 
@@ -125,7 +127,7 @@ class PongEvalCallback(BaseCallback):
                     old_full_obs = self.eval_env.envs[0].unwrapped.render()
                     blocker_heuristic_decision = self.model.blocker_heuristic.should_block(old_full_obs, action_item)
                     if blocker_heuristic_decision:
-                        action_item = 2
+                        action_item = self.new_action
                         episode_env_interventions += 1
                         episode_exp_interventions += 1
 

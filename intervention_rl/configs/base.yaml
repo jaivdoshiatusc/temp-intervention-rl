@@ -12,10 +12,10 @@ train:
 
 eval:
   eval_seed: 20                     # Seed for evaluation
-  eval_episodes: 6                  # Number of episodes to evaluate
+  eval_episodes: 5                  # Number of episodes to evaluate
   verbose: 1
 
-hp_name: e-${env.short_name}_a-${algo.name}_et-${exp_type}_ent-${algo[${algo.name}].ent_coef}_al-${env.alpha}_be-${env.beta}_s-${seed}
+hp_name: e-${env.short_name}_a-${algo.name}_et-${exp_type}_ent-${algo[${algo.name}].ent_coef}_al-${env.alpha}_be-${env.beta}_io-${env.iota}_s-${seed}
 
 wandb:
   use: True

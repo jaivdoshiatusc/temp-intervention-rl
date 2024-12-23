@@ -4,7 +4,7 @@ ppo:
   policy: "CnnPolicy"               # Policy model to use (MlpPolicy, CnnPolicy, ...)
   policy_kwargs: {}                 # Additional arguments for policy model
   
-  learning_rate: 0.0025             # Learning rate for A2C
+  learning_rate: 0.00025            # Learning rate for A2C
   n_steps: 128                      # Number of steps in rollout
   batch_size: 256                   # Minibatch size
   n_epochs: 4                       # Number of optimization epochs
@@ -13,22 +13,9 @@ ppo:
   clip_range: 0.1                   # Clipping parameter, constant c in PPO
   clip_range_vf: None               # Clipping parameter for the value function, constant c in PPO
   normalize_advantage: true         # Normalize advantage estimates
-  ent_coef: 0.05                    # Entropy coefficient
+  ent_coef: 0.01                    # Entropy coefficient
   vf_coef: 0.5                      # Value function coefficient
   max_grad_norm: 0.5                # Max norm for gradient clipping
   use_sde: false                    # Use State Dependent Exploration (SDE)
   sde_sample_freq: -1               # SDE sampling frequency
   verbose: 1                        # Verbosity level
-
-  # Training hyperparameters
-  total_timesteps: 2500000          # Total training timesteps
-  log_freq: 20000                   # Log every log_freq timesteps
-  eval_freq: 20000                  # Evaluate every eval_freq timesteps
-  gif_freq: 100000                  # Generate gif every gif_freq timesteps
-  save_freq: 500000                 # Save model every save_freq timesteps
-
-  # Blocker-related hyperparameters
-  blocker_epochs: 4                 # Number of epochs to train the blocker
-  blocker_switch_time: 120000       # Timesteps before switching blocker behavior
-  blocker_train_freq: 20000         # Train blocker every blocker_train_freq timesteps
-  blocker_save_freq: 60000          # Save blocker model every blocker_save_freq timesteps

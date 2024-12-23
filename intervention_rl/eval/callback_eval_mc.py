@@ -6,6 +6,7 @@ import io
 from stable_baselines3.common.callbacks import BaseCallback
 
 class MCEvalCallback(BaseCallback):
+    PLAY_AREA = [34, 34 + 160]  # Play area in Pong
 
     def __init__(self, cfg, eval_env, eval_freq, eval_seed, gif_freq, n_eval_episodes, new_action, verbose=1):
         super(MCEvalCallback, self).__init__(verbose)
@@ -16,13 +17,19 @@ class MCEvalCallback(BaseCallback):
         self.n_eval_episodes = n_eval_episodes
         self.catastrophe_clearance = cfg.env.catastrophe_clearance
         self.blocker_clearance = cfg.env.blocker_clearance
-        self.new_action = new_action
         self.verbose = verbose
+
+        self.new_action = new_action
 
         self.cum_catastrophe = 0
         self.cum_env_intervention = 0
         self.cum_exp_intervention = 0
         self.cum_disagreement = 0
+
+        self.blocker_cum_catastrophe = 0
+        self.blocker_cum_env_intervention = 0
+        self.blocker_cum_exp_intervention = 0
+        self.blocker_cum_disagreement = 0
 
         # Initialize the next evaluation step
         self.next_eval_step = self.eval_freq
@@ -37,23 +44,12 @@ class MCEvalCallback(BaseCallback):
         return True
     
     def create_frame(self):
-        frame = self.eval_env.envs[0].unwrapped.render()
+        return self.eval_env.render(mode="rgb_array")  # Frame rendering for Mountain Car
 
-        # # Draw lines on the image
-        # line_color = (255, 0, 0)  # Blue color in BGR format
-        # catastrophe_line = MCEvalCallback.PLAY_AREA[1] - self.catastrophe_clearance
-        # cv2.line(frame, (0, blocker_line), (frame.shape[1], blocker_line), line_color, 1)
-        # cv2.line(frame, (0, catastrophe_line), (frame.shape[1], catastrophe_line), line_color, 1)
-
-        return frame
-    
     def draw_catastrophe(self, frame):
-        # Draw 'catastrophe' on the image
-        img = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)  # Convert to BGR for OpenCV
-        cv2.putText(img, 'catastrophe', (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)  # Red color, smaller font size, lower position
-        frame = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)  # Convert back to RGB for rendering
-
-        return frame
+        img = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+        cv2.putText(img, 'catastrophe', (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
+        return cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
     def evaluate(self):
         all_episode_rewards = []
@@ -94,27 +90,28 @@ class MCEvalCallback(BaseCallback):
                     action_item = action.item()
 
                 if exp_type in ["ours", "hirl"]:
-                    old_full_obs = self.eval_env.envs[0].unwrapped.render()
-                    blocker_heuristic_decision = self.model.blocker_heuristic.should_block(old_full_obs, action_item)
-                    blocker_model_decision = self.model.blocker_model.should_block(
-                        old_full_obs,
+                    blocker_heuristic_decision = self.model.blocker_heuristic.should_block(obs[0], action_item)
+                    blocker_model_decision, _, _ = self.model.blocker_model.should_block(
+                        obs[0],
                         action_item,
                         blocker_heuristic_decision
                     )
                     if blocker_heuristic_decision != blocker_model_decision:
                         episode_disagreements += 1
                     if num_timesteps <= blocker_switch_time:
-                        episode_env_interventions += 1 if blocker_heuristic_decision else 0
-                        episode_exp_interventions += 1 if blocker_heuristic_decision else 0
-                        action_item = self.new_action if blocker_heuristic_decision else action_item
+                        if blocker_heuristic_decision:
+                            episode_env_interventions += 1
+                            episode_exp_interventions += 1   
+                            action_item = self.new_action                  
                     else:
-                        episode_env_interventions += 1 if blocker_model_decision else 0
-                        episode_exp_interventions += 1 if blocker_heuristic_decision else 0
-                        action_item = self.new_action if blocker_model_decision else action_item
+                        if blocker_model_decision:
+                            episode_env_interventions += 1 
+                            action_item = self.new_action
+                        if blocker_heuristic_decision:
+                            episode_exp_interventions += 1                            
 
-                elif exp_type in ["expert_ours", "expert_hirl"]:
-                    old_full_obs = self.eval_env.envs[0].unwrapped.render()
-                    blocker_heuristic_decision = self.model.blocker_heuristic.should_block(old_full_obs, action_item)
+                elif exp_type in ["expert"]:
+                    blocker_heuristic_decision = self.model.blocker_heuristic.should_block(obs[0], action_item)
                     if blocker_heuristic_decision:
                         action_item = self.new_action
                         episode_env_interventions += 1
@@ -129,10 +126,7 @@ class MCEvalCallback(BaseCallback):
                 if create_gif:
                     frame = self.create_frame()
 
-                # Check for catastrophes using BlockerHeuristic
-                new_full_obs = self.eval_env.envs[0].unwrapped.render()
-
-                if self.model.blocker_heuristic.is_catastrophe(new_full_obs):
+                if self.model.blocker_heuristic.is_catastrophe(new_obs[0]):
                     episode_catastrophes += 1  # Increment catastrophe count
                     
                     if create_gif:
@@ -165,6 +159,12 @@ class MCEvalCallback(BaseCallback):
         self.cum_exp_intervention += sum(all_exp_interventions)
         self.cum_disagreement += sum(all_disagreements)
 
+        if num_timesteps > blocker_switch_time:
+            self.blocker_cum_catastrophe += sum(all_catastrophes)
+            self.blocker_cum_env_intervention += sum(all_env_interventions)
+            self.blocker_cum_exp_intervention += sum(all_exp_interventions)
+            self.blocker_cum_disagreement += sum(all_disagreements)
+
         # Compute mean values
         mean_reward = np.mean(all_episode_rewards)
         std_reward = np.std(all_episode_rewards)
@@ -182,6 +182,11 @@ class MCEvalCallback(BaseCallback):
         self.logger.record('eval/mean_env_intervention', mean_env_intervention)
         self.logger.record('eval/mean_exp_intervention', mean_exp_intervention)
         self.logger.record('eval/mean_disagreement', mean_disagreement)
+
+        self.logger.record('eval/blocker_cum_catastrophe', self.blocker_cum_catastrophe)
+        self.logger.record('eval/blocker_cum_env_intervention', self.blocker_cum_env_intervention)
+        self.logger.record('eval/blocker_cum_exp_intervention', self.blocker_cum_exp_intervention)
+        self.logger.record('eval/blocker_cum_disagreement', self.blocker_cum_disagreement)
         
         self.logger.record('eval/total_ep_length', total_ep_length)
         self.logger.record('eval/total_reward', total_reward)

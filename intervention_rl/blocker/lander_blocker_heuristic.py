@@ -1,44 +1,53 @@
 import numpy as np
 
 class LunarLanderBlockerHeuristic:
-    TOLERANCE = 0.01
-    PADDLE_COLUMN = 143
-    PADDLE_COLOR = np.array([92, 186, 92])
-    PLAY_AREA = [34, 34 + 160]
-    DEFAULT_CLEARANCE = 16
-    DEFAULT_BLOCK_CLEARANCE = 16
+    VIEWPORT_WIDTH = 600  # VIEWPORT_W
+    VIEWPORT_HEIGHT = 400  # VIEWPORT_H
+    SCALE = 30.0  # SCALE
 
-    def __init__(self, clearance=None, block_clearance=None):
-        self.clearance = clearance if clearance is not None else self.DEFAULT_CLEARANCE
-        self.block_clearance = block_clearance if block_clearance is not None else self.DEFAULT_BLOCK_CLEARANCE
+    def __init__(self, clearance=None):
+        pass
 
-    def paddle_bottom(self, observation, paddle="right"):
-        column = observation[:, self.PADDLE_COLUMN, :] - self.PADDLE_COLOR
-        found = (np.sum(np.abs(column), axis=1) < self.TOLERANCE).astype(int)
-        r = np.argmax(np.flipud(found))
-        r = (len(found) - r - 1)
-        if not found[r]:
-            return None
-        else:
-            return r
+    def obs_to_pixels(self, obs):
+        # Scale factors as per the environment's specification
+        scale_factors = {'x': 10, 'y': 6.666}
 
-    def is_catastrophe(self, obs):
-        y = self.paddle_bottom(obs)
-        if y is None:
-            return False
-        return y > self.PLAY_AREA[1] - self.clearance
+        # Extract position from the observation and apply scale factors
+        x_pos_scaled = obs[0] * scale_factors['x']
+        y_pos_scaled = obs[1] * scale_factors['y']
+
+        # Convert x position: Center of the screen is 0 in the environment's coordinates
+        x_pixel = (x_pos_scaled + self.VIEWPORT_WIDTH / self.SCALE / 2) * self.SCALE
+
+        # Convert y position: Invert y axis for rendering (screen's 0,0 is at top-left)
+        y_pixel = self.VIEWPORT_HEIGHT - (y_pos_scaled + self.VIEWPORT_HEIGHT / self.SCALE / 4) * self.SCALE
+
+        return x_pixel, y_pixel
     
-    def is_block_zone(self, obs):
-        y = self.paddle_bottom(obs)
-        if y is None:
-            return False
-        return y > self.PLAY_AREA[1] - self.clearance - self.block_clearance
+    def is_catastrophe(self, obs):        
+        x, y, vel_x, vel_y, angle, angular_velocity, leg_1_contact, leg_2_contact = obs
+        adj_x, adj_y = self.obs_to_pixels(obs)
 
+        # Catastrophe conditions
+        in_box = (240 <= adj_x <= 360) and (180 <= adj_y <= 240)  # Render coordinate bounds
+        angle_condition = -0.25 <= angle <= 0.25
+        velocity_condition = vel_y >= -0.50
+
+        return in_box and velocity_condition and angle_condition
+
+    def is_block_zone(self, obs):
+        x, y, vel_x, vel_y, angle, angular_velocity, leg_1_contact, leg_2_contact = obs
+        adj_x, adj_y = self.obs_to_pixels(obs)
+
+        # Catastrophe conditions
+        in_box = (240 <= adj_x <= 360) and (165 <= adj_y <= 240)  # Render coordinate bounds
+        angle_condition = -0.30 <= angle <= 0.30
+        velocity_condition = vel_y >= -0.55
+
+        return in_box and velocity_condition and angle_condition
+    
     def should_block(self, obs, action):
-        if obs is None:
-            return False
-        if self.is_catastrophe(obs):
-            return True
-        elif self.is_block_zone(obs) and action not in [2, 4]:
+        if self.is_catastrophe(obs) or self.is_block_zone(obs):
             return True
         return False
+    
